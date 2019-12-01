@@ -62,6 +62,7 @@ typedef const __FlashStringHelper* fchar;
 
 // include the library code:
 #include <LiquidCrystal.h>
+#include <BigCrystal.h>
 
 //***********************************************************************************************************************************************************
 
