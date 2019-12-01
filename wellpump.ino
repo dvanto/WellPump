@@ -1,7 +1,8 @@
 //#define FF(a) (a)
 #define FF(a) F(a)
+#define SETFLAG(x) ( ++(x)?(x):(++(x)) )
 
-#define DEBUG
+//#define DEBUG
 
 //#define NO_WDT_WatchDog
 //#include <WatchDog.h>               //  https://github.com/nadavmatalon/WatchDog
@@ -162,8 +163,12 @@ void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode = POWEROFF)
     LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
   else {
     // сделать блокировку до полного отключения
-    LowPower.powerStandby(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+    PCICR = 0;
+    PCMSK2 = 0;
+
     pump = PUMP_ABORT;
+    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+
   }
 }
 
@@ -185,15 +190,20 @@ void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
     LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
   else {
     // сделать блокировку до полного отключения
-    LowPower.powerStandby(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+    PCICR = 0;
+    PCMSK2 = 0;
+
     pump = PUMP_ABORT;
+    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+
   }
 }
 
 void A_Watchdog()
 {
   wdt_disable();
-  f_WDT = 1;
+  //f_WDT = 1;
+  SETFLAG(f_WDT);
   //PumpOff();
 }
 
@@ -202,7 +212,7 @@ void A_Watchdog()
 void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
   Log.verbose(F(CR "LowMark: %i %x" CR), f_LowMark, event);
-  f_LowMark = 0;
+  //f_LowMark = 0;
 
   switch (event)
   {
@@ -228,7 +238,7 @@ void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
   Log.verbose(F(CR "HighMark: %i %x" CR), f_HighMark, event);
-  f_HighMark = 0;
+  //f_HighMark = 0;
 
   //  must be pressed before
   switch (event)
@@ -242,17 +252,11 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
         Shutdown(
           FF("Highmark ERROR!" CR),
           FF("Check HIGHMARK sensor!!!" CR), ABORT);
-        //    PumpOff();
-        //    WatchDog::stop();
-        //    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
       }
       else {
         Shutdown(
           FF("Полный бак!" CR),
           FF("Успешная остановка! :)" CR));
-        //    PumpOff();
-        //    WatchDog::stop();
-        //    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
       }
       break;
 
@@ -271,9 +275,9 @@ void btn_Leakage(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 
 //***********************************************************************************************************************************************************
 
-volatile uint8_t portBhistory = 0xFF;     // default is high because the pull-up
-volatile uint8_t portChistory = 0xFF;
-volatile uint8_t portDhistory = 0xFF;
+volatile uint8_t portBhistory = 0x00;     // default is high because the pull-up
+volatile uint8_t portChistory = 0x00;
+volatile uint8_t portDhistory = 0x00;     // не pool-up
 volatile long t = 0;
 
 ISR(PCINT2_vect)
@@ -287,17 +291,17 @@ ISR(PCINT2_vect)
 
   if (changedbits & (1 << PIN_LEAKAGE))
   {
-    f_Leakage = 1;
+    SETFLAG(f_Leakage);
   }
 
   if (changedbits & (1 << PIN_HIGHMARK))
   {
-    f_HighMark = 1;
+    SETFLAG(f_HighMark);
   }
 
   if (changedbits & (1 << PIN_LOWMARK))
   {
-    f_LowMark = 1;
+    SETFLAG(f_LowMark);
   }
 
 }
@@ -320,7 +324,8 @@ ISR(WDT_vect) {
   } else
 #endif
     wdt_disable();
-  f_WDT = 1;
+  //if (++f_WDT == 0) ++f_WDT;
+  SETFLAG(f_WDT);
 }
 
 //***********************************************************************************************************************************************************
@@ -370,8 +375,9 @@ void loop() {
   //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
   //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
 
-  if ( !(l_cnt++ ^ 0x8) )
-    Log.trace( ("t = %l f_WDT %T, f_Leakage %T, f_LowMark %T, f_HighMark %T, portBhistory %x, portChistory %x, portDhistory %x" CR),
+  if ( !(l_cnt++ ^ 0x1) )
+    //Log.trace( ("t = %l f_WDT %T, f_Leakage %T, f_LowMark %T, f_HighMark %T, portBhistory %x, portChistory %x, portDhistory %x" CR),
+    Log.trace( ("t = %l f_WDT %i, f_Leakage %i, f_LowMark %i, f_HighMark %i, portBhistory %x, portChistory %x, portDhistory %x" CR),
                t, f_WDT, f_Leakage, f_LowMark, f_HighMark,
                portBhistory, portChistory, portDhistory);
 
@@ -389,6 +395,7 @@ void loop() {
   }
 
   if (TankTimout.hasPassed(HIGHMARK_TIMEOUT)) {
+    TankTimout.stop();
     Shutdown(
       FF("TANK is FULL alert!" CR "Emergency STOP!!!" CR),
       FF("Check TANK and SENSORS!!!" CR));
