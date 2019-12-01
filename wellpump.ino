@@ -1,5 +1,25 @@
+/*
+   Управление колодезным насосом
+   
+   Закачка воды в бак с двумя датчиками - нижний уровень и верхний
+   Ограничение по времени заполнения бака
+   Переход в аварийный режим при "непредсказуемом" поведении датчиков
+   Вывод диагностической информации на LCD 1602 (16 символов, 2 строки)
+
+   Рабочий режим
+   | 1234567890123456 |
+   | ABRLHO 000S 0000
+   | STA msg456789012
+
+   Доп режм - вкл по кнопке, возврат к рабочему режиму через 10 сек
+   | 1234567890123456 |
+   | T  0000s  000000
+   | Cnt 000 Leak 000
+
+*/
+
 //#define FF(a) (a)
-#define FF(a) F(a)
+
 #define SETFLAG(x) ( ++(x)?(x):(++(x)) )
 
 //#define DEBUG
@@ -16,138 +36,194 @@
 // #define DISABLE_LOGGING
 #include <ArduinoLog.h>             // https://github.com/thijse/Arduino-Log/
 typedef const __FlashStringHelper* fchar;
+//const char LOG_AS[] PROGMEM =
+
+fchar tmp_str = NULL;
+//#define FF(a)       ( tmp_str = F(a))
+#define FF(a)       F(a)
 
 #include <DebounceEvent.h>          // https://github.com/xoseperez/debounceevent
 #include "Chrono.h"
 
-/*
-  LiquidCrystal Library - Autoscroll
-
-  Demonstrates the use a 16x2 LCD display.  The LiquidCrystal
-  library works with all LCD displays that are compatible with the
-  Hitachi HD44780 driver. There are many of them out there, and you
-  can usually tell them by the 16-pin interface.
-
-  This sketch demonstrates the use of the autoscroll()
-  and noAutoscroll() functions to make new text scroll or not.
-
-  The circuit:
-   LCD RS pin to digital pin 12
-   LCD Enable pin to digital pin 11
-   LCD D4 pin to digital pin 5
-   LCD D5 pin to digital pin 4
-   LCD D6 pin to digital pin 3
-   LCD D7 pin to digital pin 2
-   LCD R/W pin to ground
-   10K resistor:
-   ends to +5V and ground
-   wiper to LCD VO pin (pin 3)
-
-  Library originally added 18 Apr 2008
-  by David A. Mellis
-  library modified 5 Jul 2009
-  by Limor Fried (http://www.ladyada.net)
-  example added 9 Jul 2009
-  by Tom Igoe
-  modified 22 Nov 2010
-  by Tom Igoe
-  modified 7 Nov 2016
-  by Arturo Guadalupi
-
-  This example code is in the public domain.
-
-  http://www.arduino.cc/en/Tutorial/LiquidCrystalAutoscroll
-
-*/
 
 // include the library code:
-#include <LiquidCrystal.h>
-#include <BigCrystal.h>
+#include <LiquidCrystal_PCF8574.h>
+//#include <LiquidCrystal_I2C_OLED.h>
+
+#define  LCD_PORT 0x27
+LiquidCrystal_PCF8574 lcd(LCD_PORT);
+
 
 //***********************************************************************************************************************************************************
 
-#define PIN_LEAKAGE         PD5
+#define PIN_OVERFLOW        PD5
 #define PIN_HIGHMARK        PD6
 #define PIN_LOWMARK         PD7
 
 #define SW_LOW_MARK         7
 #define SW_HIGH_MARK        6
-#define SW_LEAKAGE          5
+#define SW_OVERFLOW         5
 
 #define SW_MOTOR            8
 #define SW_VALVE            9
 
 #define LOWMARK_TIMEOUT     10 // s
-#define HIGHMARK_TIMEOUT    20 // s = 250 сек = ~200 литров 
+#define HIGHMARK_TIMEOUT    427 // s = 0,468л/с 200 литров 
+#define LCD_TIMEOUT         20 // s
+#define LCD_STAT_TIME       10 // s
 
 typedef enum : byte { POWEROFF = 0,  ABORT = 1} t_ShutdownMode;
 typedef enum : byte { PUMP_OFF = 0,  PUMP_ABORT = 1, PUMP_ON = 2} t_PumpStatus;
 
 void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
 void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
-void btn_Leakage(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
+void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
 void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode);
 void Shutdown(const char*  s1, const char*  s2, t_ShutdownMode mode);
 
 //******************************************************************************************
 //  EVENT_NONE EVENT_CHANGED EVENT_PRESSED EVENT_RELEASED
-DebounceEvent sw_Leakage   = DebounceEvent(SW_LEAKAGE,    btn_Leakage,  BUTTON_PUSHBUTTON );
+DebounceEvent sw_Overflow   = DebounceEvent(SW_OVERFLOW,    btn_Overflow,  BUTTON_PUSHBUTTON );
 DebounceEvent sw_LowMark   = DebounceEvent(SW_LOW_MARK,   btn_LowMark,  BUTTON_PUSHBUTTON );
 DebounceEvent sw_HighMark  = DebounceEvent(SW_HIGH_MARK,  btn_HighMark, BUTTON_PUSHBUTTON );
 
 //BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH | BUTTON_SET_PULLUP);
 //DebounceEvent button = DebounceEvent(BUTTON_PIN, BUTTON_SWITCH | BUTTON_SET_PULLUP);
 
-Chrono TankTimout(Chrono::SECONDS);
-Chrono FlowTimout(Chrono::SECONDS);
+Chrono TankTimeout(Chrono::SECONDS);
+Chrono FlowTimeout(Chrono::SECONDS);
+Chrono LCD_Timeout(Chrono::SECONDS);
 
-volatile uint8_t f_Leakage = 0;
+volatile uint8_t f_Overflow = 0;
 volatile uint8_t f_LowMark = 0;
 volatile uint8_t f_HighMark = 0;
 
 volatile uint8_t f_WDT = 0;
 
-t_PumpStatus pump = PUMP_OFF;
+t_PumpStatus pump 		= PUMP_OFF;
+
+// statistic
+int 		 pump_cnt			= 0;
+long 		 pump_total_time	= 0;
+int 		 pump_last_time		= 0;
 
 //******************************************************************************************
+//#define LOG(func, s) { Log.func( s ); lcd.print( s ); }
+//#define LOG1(func, s, a1) { Log.func( s, a1 ); lcd.print( a1 ); }
+//#define LOG2(func, s, a1, a2) { Log.func( s, a1, a2 ); lcd.print( a1 ); lcd.print( a2 ); }
+//#define LOG3(func, s, a1, a2, a3) { Log.func( s, a1, a2, a3 ); lcd.print( a1 ); lcd.print( a2 ); lcd.print( a3 );  }
+
+void lcd_on(bool timeout = false)
+{
+  lcd.setBacklight(255);
+  lcd.clear();
+
+  if (timeout)
+    LCD_Timeout.restart();
+
+}
+
+inline char sw(bool f)
+{
+  return f ? 'F' : '_';
+}
+
+void lcd_status()
+{
+  char *s;
+  lcd.setCursor(13, 0);
+  switch (pump)
+  {
+    case PUMP_OFF:
+      s = "OFF";
+      break;
+    case PUMP_ABORT:
+      s = "ABR";
+      break;
+    case PUMP_ON:
+      s = "ON!";
+      break;
+    default:
+      s = "INV";  // INVALID
+  }
+  lcd.print( s );
+  lcd.setCursor(13, 1);
+  lcd.print( sw(sw_Overflow.pressed()) );
+  lcd.print( sw(sw_HighMark.pressed()) );
+  lcd.print( sw(sw_LowMark.pressed())  );
+}
+
+void lcd_statistic()
+{
+  lcd_on();
+
+  lcd.print(FF("Ready! Cnt: "));
+  lcd.print(pump_cnt);
+
+  lcd.setCursor(0, 1);
+  lcd.print(FF("LT: "));
+  lcd.print(pump_last_time);
+  lcd.print(FF("TT: "));
+  lcd.print(pump_total_time);
+}
 
 void PumpOff()
 {
-  Log.notice(FF("Pump OFF - " ));
+  Log.notice( FF("Pump OFF - " ) );
 
   //noInterrupts();
   digitalWrite(SW_VALVE, LOW);
   digitalWrite(SW_MOTOR, LOW);
   //interrupts();
 
-  Log.notice(FF( "done: %l seconds" CR), TankTimout.elapsed());
-  FlowTimout.stop();
-  TankTimout.stop();
+  // stat
+  pump_total_time += pump_last_time = TankTimeout.elapsed();
+
+  Log.notice( FF( "done: %i seconds" CR), pump_last_time );
+
+  lcd_on( true );
+  lcd.print ( FF("Pump OFF: " ) ); lcd.print ( pump_last_time ); lcd.print ( FF("s"));
+  // LCD_Timeout.restart(); в lcd_on
+
+  FlowTimeout.stop();
+  TankTimeout.stop();
+
   pump = PUMP_OFF;
 }
 
+
+
+// включает двигатель, если все нормально и запускает таймеры переполнения и нижнего датчика
 void PumpOn()
 {
 
   if (pump == PUMP_ABORT)
   {
     Shutdown(
-      FF("Pump ABORT mode!" CR),
-      FF("Start failed!!!" CR), ABORT);
+      FF("Pump ABORT mode!" ),
+      FF("Start failed!!!" ), ABORT);
     return;
   }
 
-  Log.notice(FF("Pump ON - " ));
+  Log.notice( FF("Pump ON - " ) );
+
+  // stat
+  pump_cnt++;
 
   digitalWrite(SW_VALVE, HIGH);
   digitalWrite(SW_MOTOR, HIGH);
 
-  Log.notice(FF( "done" CR));
-  FlowTimout.restart();
-  TankTimout.restart();
+  Log.notice( FF( "done" CR) );
+
+  lcd_on();
+  lcd.print( FF("Pump ON!!!" ));
+
+  FlowTimeout.restart();
+  TankTimeout.restart();
   pump = PUMP_ON;
 }
 
+// уснуть - до следующего поплавка (POWEROFF) или навсегда
 void _shutdown(t_ShutdownMode mode = POWEROFF)
 {
 
@@ -157,6 +233,8 @@ void _shutdown(t_ShutdownMode mode = POWEROFF)
 
   if (mode == POWEROFF)
   {
+    delay(LCD_TIMEOUT * 1000);
+    lcd.setBacklight(0);
   }
   else {
     // сделать блокировку до полного отключения
@@ -164,7 +242,11 @@ void _shutdown(t_ShutdownMode mode = POWEROFF)
     PCMSK2 = 0;
 
     pump = PUMP_ABORT;
+
+    // чтобы байтики через serial прошли
     delay(1000);
+
+    // не просыпаться никогда
     noInterrupts();
   }
 
@@ -173,32 +255,42 @@ void _shutdown(t_ShutdownMode mode = POWEROFF)
 #endif
 }
 
-
+// печатает текст и останавливает устройство
 void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode = POWEROFF)
 {
-  Log.fatal( s1 );
+  lcd_on();
+
+  lcd.print( s1 );
+  Log.fatal( "%S " CR, s1 );
+
   PumpOff();
 #ifdef WatchDog_h
   WatchDog::stop();
 #endif
   f_WDT = 0;
-  Log.fatal( s2 );
+
+  lcd.setCursor( 0, 1);
+  lcd.print( s2 );
+  Log.fatal( "%S " CR, s2 );
+
 
   _shutdown(mode);
 }
 
-void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
-{
+/*
+  void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
+  {
   Log.fatal( s1 );
   PumpOff();
-#ifdef WatchDog_h
+  #ifdef WatchDog_h
   WatchDog::stop();
-#endif
+  #endif
   f_WDT = 0;
   Log.fatal( s2 );
 
   _shutdown(mode);
-}
+  }
+  /**/
 
 void A_Watchdog()
 {
@@ -212,7 +304,7 @@ void A_Watchdog()
 
 void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
-  Log.verbose(F(CR "LowMark: %i %x" CR), f_LowMark, event);
+  Log.verbose( FF(CR "LowMark: %i %x" CR), f_LowMark, event);
   //f_LowMark = 0;
 
   switch (event)
@@ -225,19 +317,24 @@ void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
         PumpOn();
       } else {
         Shutdown(
-          FF("INVALID sensors' status!" CR "Emergency STOP!!!" CR),
-          FF("Emergency STOP on SENSORS ALERT!!!" CR), ABORT);
+          FF("INVALID sensors!"),
+          FF("Emergency STOP!"), ABORT);
       }
       break;
     case EVENT_RELEASED:
-      FlowTimout.stop();
+      FlowTimeout.stop();
+      break;
+    default:
+      Shutdown(
+        FF("Lowmark FATAL!" ),
+        FF("Emergency STOP!.." ), ABORT);
   }
 
 }
 
 void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
-  Log.verbose(F(CR "HighMark: %i %x" CR), f_HighMark, event);
+  Log.verbose(FF(CR "HighMark: %i %x" CR), f_HighMark, event);
   //f_HighMark = 0;
 
   //  must be pressed before
@@ -250,30 +347,32 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
       if (pump != PUMP_ON)
       {
         Shutdown(
-          FF("Highmark ERROR!" CR),
-          FF("Check HIGHMARK sensor!!!" CR), ABORT);
+          FF("Highmark ERROR!"),
+          FF("Check sensor!"), ABORT);
       }
       else {
-        Shutdown(
-          FF("Полный бак!" CR),
-          FF("Успешная остановка! :)" CR));
+        PumpOff();
+
+        // Shutdown(
+        // FF("FULL TANK!" ),
+        // FF("Success! :)" ));
       }
       break;
     default:
       Shutdown(
-        FF("Странные евент на хаймарке!" CR),
-        FF("Аварийная остановка! :)" CR), ABORT);
+        FF("Highmark FATAL!" ),
+        FF("Emergency STOP!.." ), ABORT);
   }
 }
 
-void btn_Leakage(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
+void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
-  Log.verbose(F(CR "LEAKAGE: %i %x" CR), f_Leakage, event);
+  Log.verbose(FF(CR "OVERFLOW: %i %x" CR), f_Overflow, event);
 
   // any change is dangerous!!!
   Shutdown(
-    FF("Leakage detected!!!" CR "Emergency STOP!!!" CR),
-    FF("Emergency STOP on LEAKAGE!!!"  CR),
+    FF("OVERFLOW!!!" ),
+    FF("Emergency STOP!"),
     ABORT);
 }
 
@@ -293,9 +392,9 @@ ISR(PCINT2_vect)
   changedbits = PIND ^ portDhistory;
   portDhistory = PIND;
 
-  if (changedbits & (1 << PIN_LEAKAGE))
+  if (changedbits & (1 << PIN_OVERFLOW))
   {
-    SETFLAG(f_Leakage);
+    SETFLAG(f_Overflow);
   }
 
   if (changedbits & (1 << PIN_HIGHMARK))
@@ -319,9 +418,9 @@ ISR(PCINT0_vect)
   changedbits = PINB ^ portBhistory;
   portBhistory = PIND;
 
-  //  if (changedbits & (1 << PIN_LEAKAGE))
+  //  if (changedbits & (1 << PIN_OVERFLOW))
   //  {
-  //    SETFLAG(f_Leakage);
+  //    SETFLAG(f_Overflow);
   //  }
   //
   //  if (changedbits & (1 << PIN_HIGHMARK))
@@ -365,16 +464,20 @@ void setup() {
   Serial.begin(115200);
   while (!Serial);
   Serial.println();
-  Serial.print(F("In the begining...") );
+  Serial.print(FF("In the begining...") );
   Serial.println();
+
+  lcd.begin(16, 2);
+  lcd_on();
+  lcd.print(FF("Starting..."));
+  //  lcd.setCursor(0,1);
+  //  lcd.print("Starting...");
 
   // LOG_LEVEL_VERBOSE
   // LOG_LEVEL_TRACE
   Log.begin(LOG_LEVEL_VERBOSE, &Serial);
 
-  Log.notice(F(CR "******************************************" CR));                     // Info string with Newline
-  //Log.notice(  "***          Logging example                " CR);                       // Info string in flash memory
-  //Log.notice(F("******************* ")); Log.notice("*********************** " CR);      // two info strings without newline
+  Log.notice( FF(CR "******************************************" CR) );                     // Info string with Newline
 
 #ifdef WatchDog_h
   WatchDog::init(A_Watchdog, OVF_8000MS, STOP);
@@ -383,6 +486,9 @@ void setup() {
   pinMode(SW_MOTOR, OUTPUT);
   pinMode(SW_VALVE, OUTPUT);
   PumpOff();
+
+  lcd.setCursor(0, 1);
+  lcd.print( FF("READY!!!") );
 
   //PORTD &= 0b11100000;
   // разрешение прерываний INT0 и INT1
@@ -423,46 +529,59 @@ void loop() {
   if ( ( ( (++l_cnt) & 0b111111 ) == 0b100000 ) )
 #endif
   {
-    unsigned long e1 =   FlowTimout.elapsed();
-    unsigned long e2 =   TankTimout.elapsed();
-    //Log.trace( ("t = %l f_WDT %T, f_Leakage %T, f_LowMark %T, f_HighMark %T, portBhistory %x, portChistory %x, portDhistory %x" CR),
-    Log.trace( ("l_cnt = %x, t = %l f_WDT %i, f_Leakage %i, f_LowMark %i, f_HighMark %i, portBhistory %x, portChistory %x, portDhistory %x, FlowTimout = %l, TankTimout = %l" CR),
-               l_cnt, t, f_WDT, f_Leakage, f_LowMark, f_HighMark,
+    unsigned long e1 =   FlowTimeout.elapsed();
+    unsigned long e2 =   TankTimeout.elapsed();
+    //Log.trace( FF("t = %l f_WDT %T, f_Overflow %T, f_LowMark %T, f_HighMark %T, portBhistory %x, portChistory %x, portDhistory %x" CR),
+    Log.trace( FF("l_cnt = %x, t = %l f_WDT %i, f_Overflow %i, f_LowMark %i, f_HighMark %i, portBhistory %x, portChistory %x, portDhistory %x, FlowTimeout = %l, TankTimeout = %l" CR),
+               l_cnt, t, f_WDT, f_Overflow, f_LowMark, f_HighMark,
                portBhistory, portChistory, portDhistory, e1, e2);
   }
 
+
   if (0 & f_WDT) {
     Shutdown(
-      FF("Watchdog alert!" CR "Emergency STOP!!!" CR),
-      FF("Emergency STOP on WATCHDOG ALERT!!!" CR),
+      FF("WATCHDOG ALERT!" ),
+      FF("Emergency STOP!" ),
       ABORT);
   }
 
-  if (FlowTimout.hasPassed(LOWMARK_TIMEOUT)) {
+
+  if (LCD_Timeout.hasPassed(LCD_TIMEOUT)) {
+    lcd.setBacklight(0);
+    _shutdown();
+  }
+  else if (LCD_Timeout.hasPassed(LCD_STAT_TIME))
+  {
+    lcd_statistic();
+  }
+
+  if (FlowTimeout.hasPassed(LOWMARK_TIMEOUT)) {
     Shutdown(
-      FF("FLOW alert!" CR "Emergency STOP!!!" CR),
-      FF("Check water valves!!!" CR),
+      FF("NO FLOW alert!" ),
+      FF("Chk WATER VALVES" ),
       ABORT);
   }
 
-  if (TankTimout.hasPassed(HIGHMARK_TIMEOUT)) {
-    TankTimout.stop();
+  if (TankTimeout.hasPassed(HIGHMARK_TIMEOUT)) {
+    TankTimeout.stop();
     Shutdown(
-      FF("TANK is FULL alert!" CR "Emergency STOP!!!" CR),
-      FF("Check TANK and SENSORS!!!" CR),
+      FF("TANK OVERFLOW!" ),
+      FF("Chk TANK & SENS!" ),
       ABORT);
   }
 
   // put your main code here, to run repeatedly:
 
-  sw_Leakage.loop();
+  sw_Overflow.loop();
   sw_HighMark.loop();
   sw_LowMark.loop();
 
+  lcd_status();
+
   if (sw_LowMark.pressed() && !sw_HighMark.pressed()) {
     Shutdown(
-      FF("INVALID sensors' status! (in loop)" CR "Emergency STOP!!!" CR),
-      FF("Emergency STOP on SENSORS ALERT!!!" CR),
+      FF("INVALID sensors!" ),
+      FF("Emergency STOP!" ),
       ABORT);
   }
 
