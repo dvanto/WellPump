@@ -2,7 +2,7 @@
 #define FF(a) F(a)
 #define SETFLAG(x) ( ++(x)?(x):(++(x)) )
 
-#define DEBUG
+//#define DEBUG
 
 //#define NO_WDT_WatchDog
 //#include <WatchDog.h>               //  https://github.com/nadavmatalon/WatchDog
@@ -114,10 +114,10 @@ void PumpOff()
 {
   Log.notice(F("Pump OFF - " ));
 
-  noInterrupts();
+  //noInterrupts();
   digitalWrite(SW_VALVE, LOW);
   digitalWrite(SW_MOTOR, LOW);
-  interrupts();
+  //interrupts();
 
   Log.notice(F( "done: %l seconds" CR), TankTimout.elapsed());
   FlowTimout.stop();
@@ -147,15 +147,8 @@ void PumpOn()
   pump = PUMP_ON;
 }
 
-void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode = POWEROFF)
+void _shutdown(t_ShutdownMode mode = POWEROFF)
 {
-  Log.fatal( s1 );
-  PumpOff();
-#ifdef WatchDog_h
-  WatchDog::stop();
-#endif
-  f_WDT = 0;
-  Log.fatal( s2 );
 
 #ifdef DEBUG
   return;
@@ -170,16 +163,27 @@ void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode = POWEROFF)
     PCMSK2 = 0;
 
     pump = PUMP_ABORT;
+    delay(1000);
+    noInterrupts();
   }
 
-  noInterrupts();
-
-#ifdef _ARDUINO_LOW_POWER_H_
-  LowPower.deepSleep();
-#endif
 #ifdef LowPower_h
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
 #endif
+}
+
+
+void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode = POWEROFF)
+{
+  Log.fatal( s1 );
+  PumpOff();
+#ifdef WatchDog_h
+  WatchDog::stop();
+#endif
+  f_WDT = 0;
+  Log.fatal( s2 );
+
+  _shutdown(mode);
 }
 
 void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
@@ -192,31 +196,7 @@ void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
   f_WDT = 0;
   Log.fatal( s2 );
 
-#ifdef DEBUG
-  return;
-#endif
-
-  if (mode == POWEROFF)
-  {
-  }
-  else {
-    // сделать блокировку до полного отключения
-    PCICR = 0;
-    PCMSK2 = 0;
-
-    pump = PUMP_ABORT;
-  }
-
-  noInterrupts();
-
-#ifdef _ARDUINO_LOW_POWER_H_
-  LowPower.deepSleep();
-#endif
-
-#ifdef LowPower_h
-  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-#endif
-
+  _shutdown(mode);
 }
 
 void A_Watchdog()
@@ -266,7 +246,7 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
       // вода начала кончаться
       break;
     case EVENT_RELEASED:
-      if (pump == PUMP_OFF)
+      if (pump != PUMP_ON)
       {
         Shutdown(
           FF("Highmark ERROR!" CR),
@@ -278,6 +258,10 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
           FF("Успешная остановка! :)" CR));
       }
       break;
+    default:
+      Shutdown(
+        FF("Странные евент на хаймарке!" CR),
+        FF("Аварийная остановка! :)" CR), ABORT);
   }
 }
 
@@ -288,7 +272,8 @@ void btn_Leakage(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
   // any change is dangerous!!!
   Shutdown(
     FF("Leakage detected!!!" CR "Emergency STOP!!!" CR),
-    FF("Emergency STOP on LEAKAGE!!!"  CR));
+    FF("Emergency STOP on LEAKAGE!!!"  CR),
+    ABORT);
 }
 
 //***********************************************************************************************************************************************************
@@ -418,31 +403,38 @@ uint8_t l_cnt = 0;
 
 void loop() {
 
-
 #ifdef LowPower_h
-  LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
-  //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
-#else
-  delay(10);
+  if (pump == PUMP_OFF)
+  {
+    LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_ON, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
+    //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART0_OFF, TWI_OFF);
+  }
+  else
 #endif
+    delay(10);
+
 
 #ifdef LowPower_h
-  //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
+  //LowPower.idle(.....
   if ( ( ( (++l_cnt) & 0b11111 ) == 0b10000 ) )
-
 #else
   //delay(10);
   if ( ( ( (++l_cnt) & 0b111111 ) == 0b100000 ) )
 #endif
+  {
+    unsigned long e1 =   FlowTimout.elapsed();
+    unsigned long e2 =   TankTimout.elapsed();
     //Log.trace( ("t = %l f_WDT %T, f_Leakage %T, f_LowMark %T, f_HighMark %T, portBhistory %x, portChistory %x, portDhistory %x" CR),
-    Log.trace( ("l_cnt = %x, t = %l f_WDT %i, f_Leakage %i, f_LowMark %i, f_HighMark %i, portBhistory %x, portChistory %x, portDhistory %x" CR),
+    Log.trace( ("l_cnt = %x, t = %l f_WDT %i, f_Leakage %i, f_LowMark %i, f_HighMark %i, portBhistory %x, portChistory %x, portDhistory %x, FlowTimout = %l, TankTimout = %l" CR),
                l_cnt, t, f_WDT, f_Leakage, f_LowMark, f_HighMark,
-               portBhistory, portChistory, portDhistory);
+               portBhistory, portChistory, portDhistory, e1, e2);
+  }
 
   if (0 & f_WDT) {
     Shutdown(
       FF("Watchdog alert!" CR "Emergency STOP!!!" CR),
-      FF("Emergency STOP on WATCHDOG ALERT!!!" CR));
+      FF("Emergency STOP on WATCHDOG ALERT!!!" CR),
+      ABORT);
   }
 
   if (FlowTimout.hasPassed(LOWMARK_TIMEOUT)) {
