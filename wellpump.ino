@@ -2,13 +2,13 @@
 #define FF(a) F(a)
 #define SETFLAG(x) ( ++(x)?(x):(++(x)) )
 
-//#define DEBUG
+#define DEBUG
 
 //#define NO_WDT_WatchDog
 //#include <WatchDog.h>               //  https://github.com/nadavmatalon/WatchDog
 
 //#define NO_WDT_LowPower
-#include <LowPower.h>               //  https://github.com/rocketscream/Low-Power
+//#include <LowPower.h>               //  https://github.com/rocketscream/Low-Power
 #include <avr/wdt.h>
 
 // #define DISABLE_LOGGING
@@ -160,14 +160,20 @@ void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode = POWEROFF)
 #endif
 
   if (mode == POWEROFF)
+  {
+#ifdef LowPower_h
     LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+#endif
+  }
   else {
     // сделать блокировку до полного отключения
     PCICR = 0;
     PCMSK2 = 0;
 
     pump = PUMP_ABORT;
+#ifdef LowPower_h
     LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+#endif
 
   }
 }
@@ -187,14 +193,20 @@ void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
 #endif
 
   if (mode == POWEROFF)
+  {
+#ifdef LowPower_h
     LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+#endif
+  }
   else {
     // сделать блокировку до полного отключения
     PCICR = 0;
     PCMSK2 = 0;
 
     pump = PUMP_ABORT;
+#ifdef LowPower_h
     LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+#endif
 
   }
 }
@@ -372,8 +384,10 @@ uint8_t l_cnt = 0;
 
 void loop() {
   delay(10);
+#ifdef LowPower_h
   //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
   //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
+#endif
 
   if ( !(l_cnt++ ^ 0x1) )
     //Log.trace( ("t = %l f_WDT %T, f_Leakage %T, f_LowMark %T, f_HighMark %T, portBhistory %x, portChistory %x, portDhistory %x" CR),
@@ -390,15 +404,16 @@ void loop() {
   if (FlowTimout.hasPassed(LOWMARK_TIMEOUT)) {
     Shutdown(
       FF("FLOW alert!" CR "Emergency STOP!!!" CR),
-      FF("Check water valves!!!" CR)
-    );
+      FF("Check water valves!!!" CR),
+      ABORT);
   }
 
   if (TankTimout.hasPassed(HIGHMARK_TIMEOUT)) {
     TankTimout.stop();
     Shutdown(
       FF("TANK is FULL alert!" CR "Emergency STOP!!!" CR),
-      FF("Check TANK and SENSORS!!!" CR));
+      FF("Check TANK and SENSORS!!!" CR),
+      ABORT);
   }
 
   // put your main code here, to run repeatedly:
@@ -410,7 +425,8 @@ void loop() {
   if (sw_LowMark.pressed() && !sw_HighMark.pressed()) {
     Shutdown(
       FF("INVALID sensors' status! (in loop)" CR "Emergency STOP!!!" CR),
-      FF("Emergency STOP on SENSORS ALERT!!!" CR));
+      FF("Emergency STOP on SENSORS ALERT!!!" CR),
+      ABORT);
   }
 
 }
