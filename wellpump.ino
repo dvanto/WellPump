@@ -113,14 +113,14 @@ t_PumpStatus pump = PUMP_OFF;
 
 void PumpOff()
 {
-  Log.notice(F("Pump OFF - " ));
+  Log.notice(FF("Pump OFF - " ));
 
   //noInterrupts();
   digitalWrite(SW_VALVE, LOW);
   digitalWrite(SW_MOTOR, LOW);
   //interrupts();
 
-  Log.notice(F( "done: %l seconds" CR), TankTimout.elapsed());
+  Log.notice(FF( "done: %l seconds" CR), TankTimout.elapsed());
   FlowTimout.stop();
   TankTimout.stop();
   pump = PUMP_OFF;
@@ -137,12 +137,12 @@ void PumpOn()
     return;
   }
 
-  Log.notice(F("Pump ON - " ));
+  Log.notice(FF("Pump ON - " ));
 
   digitalWrite(SW_VALVE, HIGH);
   digitalWrite(SW_MOTOR, HIGH);
 
-  Log.notice(F( "done" CR));
+  Log.notice(FF( "done" CR));
   FlowTimout.restart();
   TankTimout.restart();
   pump = PUMP_ON;
