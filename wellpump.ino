@@ -8,7 +8,9 @@
 //#include <WatchDog.h>               //  https://github.com/nadavmatalon/WatchDog
 
 //#define NO_WDT_LowPower
-//#include <LowPower.h>               //  https://github.com/rocketscream/Low-Power
+
+#include <LowPower.h>               //  https://github.com/rocketscream/Low-Power
+//#include <ArduinoLowPower.h>          // https://www.arduino.cc/en/Reference/ArduinoLowPower
 #include <avr/wdt.h>
 
 // #define DISABLE_LOGGING
@@ -161,9 +163,6 @@ void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode = POWEROFF)
 
   if (mode == POWEROFF)
   {
-#ifdef LowPower_h
-    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-#endif
   }
   else {
     // сделать блокировку до полного отключения
@@ -171,11 +170,16 @@ void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode = POWEROFF)
     PCMSK2 = 0;
 
     pump = PUMP_ABORT;
-#ifdef LowPower_h
-    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-#endif
-
   }
+
+  noInterrupts();
+
+#ifdef _ARDUINO_LOW_POWER_H_
+  LowPower.deepSleep();
+#endif
+#ifdef LowPower_h
+  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+#endif
 }
 
 void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
@@ -194,9 +198,6 @@ void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
 
   if (mode == POWEROFF)
   {
-#ifdef LowPower_h
-    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-#endif
   }
   else {
     // сделать блокировку до полного отключения
@@ -204,11 +205,18 @@ void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
     PCMSK2 = 0;
 
     pump = PUMP_ABORT;
-#ifdef LowPower_h
-    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  }
+
+  noInterrupts();
+
+#ifdef _ARDUINO_LOW_POWER_H_
+  LowPower.deepSleep();
 #endif
 
-  }
+#ifdef LowPower_h
+  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+#endif
+
 }
 
 void A_Watchdog()
@@ -242,7 +250,6 @@ void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
       break;
     case EVENT_RELEASED:
       FlowTimout.stop();
-
   }
 
 }
@@ -271,7 +278,6 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
           FF("Успешная остановка! :)" CR));
       }
       break;
-
   }
 }
 
@@ -297,7 +303,7 @@ ISR(PCINT2_vect)
   t = millis();
   uint8_t changedbits;
 
-  //PCIMSK1
+  //PCIMSK2
   changedbits = PIND ^ portDhistory;
   portDhistory = PIND;
 
@@ -315,6 +321,32 @@ ISR(PCINT2_vect)
   {
     SETFLAG(f_LowMark);
   }
+
+}
+
+ISR(PCINT0_vect)
+{
+  t = millis();
+  uint8_t changedbits;
+
+  //PCIMSK0
+  changedbits = PINB ^ portBhistory;
+  portBhistory = PIND;
+
+  //  if (changedbits & (1 << PIN_LEAKAGE))
+  //  {
+  //    SETFLAG(f_Leakage);
+  //  }
+  //
+  //  if (changedbits & (1 << PIN_HIGHMARK))
+  //  {
+  //    SETFLAG(f_HighMark);
+  //  }
+  //
+  //  if (changedbits & (1 << PIN_LOWMARK))
+  //  {
+  //    SETFLAG(f_LowMark);
+  //  }
 
 }
 
@@ -351,7 +383,8 @@ void setup() {
   Serial.println();
 
   // LOG_LEVEL_VERBOSE
-  Log.begin(LOG_LEVEL_TRACE, &Serial);
+  // LOG_LEVEL_TRACE
+  Log.begin(LOG_LEVEL_VERBOSE, &Serial);
 
   Log.notice(F(CR "******************************************" CR));                     // Info string with Newline
   //Log.notice(  "***          Logging example                " CR);                       // Info string in flash memory
@@ -381,18 +414,29 @@ void setup() {
 
 //***********************************************************************************************************************************************************
 uint8_t l_cnt = 0;
+#define CNT_DIV 3
 
 void loop() {
-  delay(10);
+
+
 #ifdef LowPower_h
-  //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
+  LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
   //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
+#else
+  delay(10);
 #endif
 
-  if ( !(l_cnt++ ^ 0x1) )
+#ifdef LowPower_h
+  //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
+  if ( ( ( (++l_cnt) & 0b11111 ) == 0b10000 ) )
+
+#else
+  //delay(10);
+  if ( ( ( (++l_cnt) & 0b111111 ) == 0b100000 ) )
+#endif
     //Log.trace( ("t = %l f_WDT %T, f_Leakage %T, f_LowMark %T, f_HighMark %T, portBhistory %x, portChistory %x, portDhistory %x" CR),
-    Log.trace( ("t = %l f_WDT %i, f_Leakage %i, f_LowMark %i, f_HighMark %i, portBhistory %x, portChistory %x, portDhistory %x" CR),
-               t, f_WDT, f_Leakage, f_LowMark, f_HighMark,
+    Log.trace( ("l_cnt = %x, t = %l f_WDT %i, f_Leakage %i, f_LowMark %i, f_HighMark %i, portBhistory %x, portChistory %x, portDhistory %x" CR),
+               l_cnt, t, f_WDT, f_Leakage, f_LowMark, f_HighMark,
                portBhistory, portChistory, portDhistory);
 
   if (0 & f_WDT) {
