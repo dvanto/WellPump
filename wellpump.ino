@@ -1,6 +1,6 @@
 /*
    Управление колодезным насосом
-   
+
    Закачка воды в бак с двумя датчиками - нижний уровень и верхний
    Ограничение по времени заполнения бака
    Переход в аварийный режим при "непредсказуемом" поведении датчиков
@@ -8,19 +8,20 @@
 
    Рабочий режим
    | 1234567890123456 |
-   | ABRLHO 000S 0000
+   | ABRLHO 000s 0000
    | STA msg456789012
 
    Доп режм - вкл по кнопке, возврат к рабочему режиму через 10 сек
+   mode  0
    | 1234567890123456 |
    | T  0000s  000000
-   | Cnt 000 Leak 000
+   | Cnt 000"Tank Timout 000
 
 */
 
 //#define FF(a) (a)
 
-#define SETFLAG(x) ( ++(x)?(x):(++(x)) )
+#define SETFLAG(x) ( ++(x)?(x):(++(x)) )  // если увеличение дало 0, то увеличиваем еще раз
 
 //#define DEBUG
 
@@ -46,7 +47,6 @@ fchar tmp_str = NULL;
 #include "Chrono.h"
 
 
-// include the library code:
 #include <LiquidCrystal_PCF8574.h>
 //#include <LiquidCrystal_I2C_OLED.h>
 
@@ -54,7 +54,7 @@ fchar tmp_str = NULL;
 LiquidCrystal_PCF8574 lcd(LCD_PORT);
 
 
-//***********************************************************************************************************************************************************
+//*******************************************************************************************
 
 #define PIN_OVERFLOW        PD5
 #define PIN_HIGHMARK        PD6
@@ -68,44 +68,62 @@ LiquidCrystal_PCF8574 lcd(LCD_PORT);
 #define SW_VALVE            9
 
 #define LOWMARK_TIMEOUT     10 // s
-#define HIGHMARK_TIMEOUT    427 // s = 0,468л/с 200 литров 
+#define HIGHMARK_TIMEOUT    427 // s = 0,468л/с 200 литров
+#define SPEED_LPS           0.468 // liters per second
 #define LCD_TIMEOUT         20 // s
 #define LCD_STAT_TIME       10 // s
+#define STAT_DELAY			 100 // ms
 
-typedef enum : byte { POWEROFF = 0,  ABORT = 1} t_ShutdownMode;
-typedef enum : byte { PUMP_OFF = 0,  PUMP_ABORT = 1, PUMP_ON = 2} t_PumpStatus;
-
-void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
-void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
-void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
-void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode);
-void Shutdown(const char*  s1, const char*  s2, t_ShutdownMode mode);
 
 //******************************************************************************************
 //  EVENT_NONE EVENT_CHANGED EVENT_PRESSED EVENT_RELEASED
-DebounceEvent sw_Overflow   = DebounceEvent(SW_OVERFLOW,    btn_Overflow,  BUTTON_PUSHBUTTON );
-DebounceEvent sw_LowMark   = DebounceEvent(SW_LOW_MARK,   btn_LowMark,  BUTTON_PUSHBUTTON );
-DebounceEvent sw_HighMark  = DebounceEvent(SW_HIGH_MARK,  btn_HighMark, BUTTON_PUSHBUTTON );
-
-//BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH | BUTTON_SET_PULLUP);
-//DebounceEvent button = DebounceEvent(BUTTON_PIN, BUTTON_SWITCH | BUTTON_SET_PULLUP);
-
-Chrono TankTimeout(Chrono::SECONDS);
-Chrono FlowTimeout(Chrono::SECONDS);
-Chrono LCD_Timeout(Chrono::SECONDS);
+//  BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH | BUTTON_SET_PULLUP);
+//  DebounceEvent button = DebounceEvent(BUTTON_PIN, BUTTON_SWITCH | BUTTON_SET_PULLUP);
 
 volatile uint8_t f_Overflow = 0;
 volatile uint8_t f_LowMark = 0;
 volatile uint8_t f_HighMark = 0;
 
+void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
+void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
+void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
+
+DebounceEvent sw_Overflow  = DebounceEvent(SW_OVERFLOW,   btn_Overflow, BUTTON_PUSHBUTTON );
+DebounceEvent sw_LowMark   = DebounceEvent(SW_LOW_MARK,   btn_LowMark,  BUTTON_PUSHBUTTON );
+DebounceEvent sw_HighMark  = DebounceEvent(SW_HIGH_MARK,  btn_HighMark, BUTTON_PUSHBUTTON );
+
+Chrono TankTimeout(Chrono::SECONDS);
+Chrono FlowTimeout(Chrono::SECONDS);
+Chrono LCD_Timeout(Chrono::SECONDS);
+Chrono StatDelay(Chrono::MILLIS);
+
+
 volatile uint8_t f_WDT = 0;
+
+//******************************************************************************************
+typedef enum : byte { POWEROFF = 0,  ABORT = 1} t_ShutdownMode;
+
+void Shutdown(fchar s1, //fchar s2,
+              t_ShutdownMode mode);
+void Shutdown(const char*  s1, //const char*  s2,
+              t_ShutdownMode mode);
+
+void log_internal_state();
+							
+
+
+//******************************************************************************************
+typedef enum : byte { PUMP_OFF = 0,  PUMP_ABORT = 1, PUMP_ON = 2} t_PumpStatus;
 
 t_PumpStatus pump 		= PUMP_OFF;
 
 // statistic
-int 		 pump_cnt			= 0;
-long 		 pump_total_time	= 0;
-int 		 pump_last_time		= 0;
+int 		fv_pump_cnt			      = 0;
+int     fv_pump_owfl          = 0;
+long 		fv_pump_total_time    = 0;
+long    fv_pump_total_volume  = 0;
+int 		pump_last_time        = 0;
+int     pump_last_volume      = 0;
 
 //******************************************************************************************
 //#define LOG(func, s) { Log.func( s ); lcd.print( s ); }
@@ -118,54 +136,116 @@ void lcd_on(bool timeout = false)
   lcd.setBacklight(255);
   lcd.clear();
 
+	Log.verbose("lcd_on %d restart = %c" CR, __LINE__, timeout?'R':'-' );
+	
   if (timeout)
     LCD_Timeout.restart();
 
 }
 
-inline char sw(bool f)
+
+char* sprintTime4(char* s, unsigned long v)
 {
-  return f ? 'F' : '_';
+  if (v < 1000)
+    sprintf(s, "%03lus", v);            // 000s
+  else if (v < 100*60)
+    sprintf(s, "%03lum", v/60);         // 000m
+  else if (v < (unsigned long)10*60*60)
+    sprintf(s, "%3.1fh", (float)v/3600);// 0.0h
+  else
+    sprintf(s, "%03luh", v/3600);       // 000h
+
+  return s;
 }
+
+
+char* sprintTime5(char* s, unsigned long v)
+{
+  if (v < 10000)
+    sprintf(s, "%04lus", v);            // 0000s
+  else if (v < 100*60)
+    sprintf(s, "%4.1fm", (float)v/60);  // 00.0m
+  else if (v < (unsigned long)10*60*60)
+    sprintf(s, "%4.2fh", (float)v/3600);// 0.00h
+  else if (v < (unsigned long)100*60*60)
+    sprintf(s, "%4.1fh", (float)v/3600);// 00.0h
+  else
+    sprintf(s, "%04luh", v/3600);       // 0000h
+
+  return s;
+}
+
+
+inline char sw(bool f, char c ='F') 
+{
+  return f ? c : '_';
+}
+
+
+char status_msg[]="INV\0OFF\0ABR\0ON!\0INV";
 
 void lcd_status()
 {
-  char *s;
-  lcd.setCursor(13, 0);
+  char *s, c1, c2, c3;
+  char s_time[5];
+  char s_vol[5];
+
+  lcd.setCursor(0, 0);
   switch (pump)
   {
     case PUMP_OFF:
-      s = "OFF";
+      s = status_msg+4;
       break;
     case PUMP_ABORT:
-      s = "ABR";
+      s = status_msg+8;  // ABORT
       break;
     case PUMP_ON:
-      s = "ON!";
+      s = status_msg+12;
       break;
     default:
-      s = "INV";  // INVALID
+      s = status_msg;  // INVALID
   }
   lcd.print( s );
-  lcd.setCursor(13, 1);
-  lcd.print( sw(sw_Overflow.pressed()) );
-  lcd.print( sw(sw_HighMark.pressed()) );
-  lcd.print( sw(sw_LowMark.pressed())  );
-}
+  lcd.print( c1 = sw(sw_Overflow.pressed(), 'O') );
+  lcd.print( c2 = sw(sw_HighMark.pressed(), 'F') );
+  lcd.print( c3 = sw( sw_LowMark.pressed(), 'E') );
+  lcd.print( ' ' );
 
-void lcd_statistic()
-{
-  lcd_on();
+  lcd.print(sprintTime4(s_time, pump_last_time));
+  lcd.print(' ');
+  sprintf(s_vol, "%04u", pump_last_volume);
+  lcd.print(s_vol);
 
-  lcd.print(FF("Ready! Cnt: "));
-  lcd.print(pump_cnt);
+  Log.notice("%s %c%c%c %s %s" CR, s, c1, c2, c3, s_time, s_vol);
 
   lcd.setCursor(0, 1);
-  lcd.print(FF("LT: "));
-  lcd.print(pump_last_time);
-  lcd.print(FF("TT: "));
-  lcd.print(pump_total_time);
 }
+
+
+void lcd_statistic(uint8_t mode=0)
+{
+  switch (mode)
+  {
+    case 0:
+    default:  // пока так
+      lcd.setCursor(0, 0);
+      lcd.print("T  ");
+      lcd.print(fv_pump_total_time);
+      lcd.print("  ");
+      lcd.print(fv_pump_total_volume);
+
+      lcd.setCursor(0, 1);
+      lcd.print("Cnt ");
+      lcd.print(fv_pump_cnt);
+      lcd.print("Ovfl ");
+      lcd.print(fv_pump_owfl);
+      break;
+  }
+
+  //lcd_on(true);
+}
+
+//******************************************************************************************
 
 void PumpOff()
 {
@@ -177,20 +257,19 @@ void PumpOff()
   //interrupts();
 
   // stat
-  pump_total_time += pump_last_time = TankTimeout.elapsed();
+  fv_pump_total_time += pump_last_time = TankTimeout.elapsed();
+  pump_last_volume = SPEED_LPS * pump_last_time;
+  fv_pump_total_volume += pump_last_volume;
 
   Log.notice( FF( "done: %i seconds" CR), pump_last_time );
 
-  lcd_on( true );
-  lcd.print ( FF("Pump OFF: " ) ); lcd.print ( pump_last_time ); lcd.print ( FF("s"));
-  // LCD_Timeout.restart(); в lcd_on
+  lcd_status();
 
   FlowTimeout.stop();
   TankTimeout.stop();
-
+  
   pump = PUMP_OFF;
 }
-
 
 
 // включает двигатель, если все нормально и запускает таймеры переполнения и нижнего датчика
@@ -200,28 +279,30 @@ void PumpOn()
   if (pump == PUMP_ABORT)
   {
     Shutdown(
-      FF("Pump ABORT mode!" ),
-      FF("Start failed!!!" ), ABORT);
+      //  1234567890123456
+      FF("Start failed!!!" ),
+      ABORT);
     return;
   }
 
   Log.notice( FF("Pump ON - " ) );
 
   // stat
-  pump_cnt++;
+  fv_pump_cnt++;
 
   digitalWrite(SW_VALVE, HIGH);
   digitalWrite(SW_MOTOR, HIGH);
 
   Log.notice( FF( "done" CR) );
 
-  lcd_on();
-  lcd.print( FF("Pump ON!!!" ));
+  lcd_status();
 
   FlowTimeout.restart();
   TankTimeout.restart();
+  StatDelay.restart();
   pump = PUMP_ON;
 }
+
 
 // уснуть - до следующего поплавка (POWEROFF) или навсегда
 void _shutdown(t_ShutdownMode mode = POWEROFF)
@@ -237,60 +318,61 @@ void _shutdown(t_ShutdownMode mode = POWEROFF)
     lcd.setBacklight(0);
   }
   else {
+    // FULL Shutdown !!!
     // сделать блокировку до полного отключения
+    Log.verbose("shutdown %d" CR, __LINE__);
     PCICR = 0;
     PCMSK2 = 0;
 
     pump = PUMP_ABORT;
 
     // чтобы байтики через serial прошли
-    delay(1000);
+    delay(100);
 
     // не просыпаться никогда
-    noInterrupts();
+		
+		Log.verbose("powerDown %d" CR, __LINE__);
+		delay(100);
+		
+    noInterrupts(); ///???
+		LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+    Log.verbose("wakeup %d" CR, __LINE__);
   }
 
 #ifdef LowPower_h
+  Log.verbose("powerDown %d" CR, __LINE__);
+  delay(100);
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  Log.verbose("wakeup %d" CR, __LINE__);
 #endif
 }
 
-// печатает текст и останавливает устройство
-void Shutdown(fchar s1, fchar s2, t_ShutdownMode mode = POWEROFF)
-{
-  lcd_on();
 
+// печатает текст и останавливает устройство
+void Shutdown(fchar s1, t_ShutdownMode mode = POWEROFF)
+{
+	
+	PumpOff();
+	
+	if (mode != POWEROFF)
+	{
+		pump = PUMP_ABORT;
+	}
+	
+  lcd_on(pump != PUMP_ABORT);
+  lcd_status();
   lcd.print( s1 );
+
   Log.fatal( "%S " CR, s1 );
 
-  PumpOff();
 #ifdef WatchDog_h
   WatchDog::stop();
 #endif
   f_WDT = 0;
 
-  lcd.setCursor( 0, 1);
-  lcd.print( s2 );
-  Log.fatal( "%S " CR, s2 );
-
-
   _shutdown(mode);
 }
 
-/*
-  void Shutdown(const char* s1, const char* s2, t_ShutdownMode mode = POWEROFF)
-  {
-  Log.fatal( s1 );
-  PumpOff();
-  #ifdef WatchDog_h
-  WatchDog::stop();
-  #endif
-  f_WDT = 0;
-  Log.fatal( s2 );
-
-  _shutdown(mode);
-  }
-  /**/
 
 void A_Watchdog()
 {
@@ -317,8 +399,9 @@ void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
         PumpOn();
       } else {
         Shutdown(
+          //  1234567890123456
           FF("INVALID sensors!"),
-          FF("Emergency STOP!"), ABORT);
+          ABORT);
       }
       break;
     case EVENT_RELEASED:
@@ -326,8 +409,9 @@ void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
       break;
     default:
       Shutdown(
-        FF("Lowmark FATAL!" ),
-        FF("Emergency STOP!.." ), ABORT);
+        //  1234567890123456
+        FF("LM FTL! Chk SENS" ),
+        ABORT);
   }
 
 }
@@ -347,8 +431,9 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
       if (pump != PUMP_ON)
       {
         Shutdown(
-          FF("Highmark ERROR!"),
-          FF("Check sensor!"), ABORT);
+          //  1234567890123456
+          FF("HM ERR! Chk SENS"),
+          ABORT);
       }
       else {
         PumpOff();
@@ -360,8 +445,9 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
       break;
     default:
       Shutdown(
-        FF("Highmark FATAL!" ),
-        FF("Emergency STOP!.." ), ABORT);
+        //  1234567890123456
+        FF("HM FTL! Chk SENS"),
+        ABORT);
   }
 }
 
@@ -369,10 +455,12 @@ void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
   Log.verbose(FF(CR "OVERFLOW: %i %x" CR), f_Overflow, event);
 
+  fv_pump_owfl++;
+
   // any change is dangerous!!!
   Shutdown(
-    FF("OVERFLOW!!!" ),
-    FF("Emergency STOP!"),
+    //  1234567890123456
+    FF("OVRFLW DETECTED!" ),
     ABORT);
 }
 
@@ -457,6 +545,26 @@ ISR(WDT_vect) {
   SETFLAG(f_WDT);
 }
 
+
+void log_internal_state(int l_cnt)
+{
+    unsigned long e1 =   FlowTimeout.elapsed();
+    unsigned long e2 =   TankTimeout.elapsed();
+		unsigned long e3 =   LCD_Timeout.elapsed();
+		unsigned long e4 =   StatDelay.elapsed();
+						
+    //Log.trace( FF("t = %l f_WDT %T, f_Overflow %T, f_LowMark %T, f_HighMark %T, portBhistory %x, portChistory %x, portDhistory %x" CR),
+    Log.trace( FF("l_cnt = %x, t = %l f_WDT %i, f_Overflow %i, f_LowMark %i, f_HighMark %i, " CR
+									"        portBhistory %x, portChistory %x, portDhistory %x, " CR
+									"        FlowTimeout = %c %l, TankTimeout = %c %l, LCD_Timeout = %c %l, StatDelay = %c %l" CR),
+               l_cnt, t, f_WDT, f_Overflow, f_LowMark, f_HighMark,
+               portBhistory, portChistory, portDhistory, 
+							 sw( FlowTimeout.isRunning(), 'R') , e1, sw( TankTimeout.isRunning(), 'R'), e2, 
+							 sw( LCD_Timeout.isRunning(), 'R'), e3, sw( StatDelay.isRunning(), 'R'), e4
+		);
+}
+
+
 //***********************************************************************************************************************************************************
 
 
@@ -467,8 +575,10 @@ void setup() {
   Serial.print(FF("In the begining...") );
   Serial.println();
 
+  // lcd.init();
   lcd.begin(16, 2);
-  lcd_on();
+  lcd.noAutoscroll();
+  lcd_on(true);
   lcd.print(FF("Starting..."));
   //  lcd.setCursor(0,1);
   //  lcd.print("Starting...");
@@ -476,7 +586,6 @@ void setup() {
   // LOG_LEVEL_VERBOSE
   // LOG_LEVEL_TRACE
   Log.begin(LOG_LEVEL_VERBOSE, &Serial);
-
   Log.notice( FF(CR "******************************************" CR) );                     // Info string with Newline
 
 #ifdef WatchDog_h
@@ -487,8 +596,9 @@ void setup() {
   pinMode(SW_VALVE, OUTPUT);
   PumpOff();
 
-  lcd.setCursor(0, 1);
+  lcd_status();
   lcd.print( FF("READY!!!") );
+	StatDelay.start();
 
   //PORTD &= 0b11100000;
   // разрешение прерываний INT0 и INT1
@@ -513,60 +623,65 @@ void loop() {
 #ifdef LowPower_h
   if (pump == PUMP_OFF)
   {
-    LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_ON, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
+    Log.verbose("Sleep %d" CR, __LINE__);
+		delay(100);
+		LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART0_OFF, TWI_OFF);
+    //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_ON, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
     //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART0_OFF, TWI_OFF);
+    Log.verbose("wakeup %d" CR, __LINE__);
   }
-  else
 #endif
-    delay(10);
 
+	l_cnt++;
 
-#ifdef LowPower_h
-  //LowPower.idle(.....
-  if ( ( ( (++l_cnt) & 0b11111 ) == 0b10000 ) )
-#else
-  //delay(10);
-  if ( ( ( (++l_cnt) & 0b111111 ) == 0b100000 ) )
-#endif
+  if ( StatDelay.hasPassed(STAT_DELAY, true) )
   {
-    unsigned long e1 =   FlowTimeout.elapsed();
-    unsigned long e2 =   TankTimeout.elapsed();
-    //Log.trace( FF("t = %l f_WDT %T, f_Overflow %T, f_LowMark %T, f_HighMark %T, portBhistory %x, portChistory %x, portDhistory %x" CR),
-    Log.trace( FF("l_cnt = %x, t = %l f_WDT %i, f_Overflow %i, f_LowMark %i, f_HighMark %i, portBhistory %x, portChistory %x, portDhistory %x, FlowTimeout = %l, TankTimeout = %l" CR),
-               l_cnt, t, f_WDT, f_Overflow, f_LowMark, f_HighMark,
-               portBhistory, portChistory, portDhistory, e1, e2);
+		log_internal_state(l_cnt);
+					
+		if (pump == PUMP_ON) 
+		{
+			lcd_status();
+		}
   }
 
 
-  if (0 & f_WDT) {
+  if (0 & f_WDT) 
+  {
     Shutdown(
+      //  1234567890123456
       FF("WATCHDOG ALERT!" ),
-      FF("Emergency STOP!" ),
       ABORT);
   }
 
 
-  if (LCD_Timeout.hasPassed(LCD_TIMEOUT)) {
+  if (LCD_Timeout.hasPassed(LCD_TIMEOUT)) 
+  {
+		// lcd_off:
+    LCD_Timeout.stop();
     lcd.setBacklight(0);
+		
+    Log.verbose("Shutdown %d" CR, __LINE__);
     _shutdown();
+    Log.verbose("wakeup %d" CR, __LINE__);
   }
   else if (LCD_Timeout.hasPassed(LCD_STAT_TIME))
   {
     lcd_statistic();
   }
 
-  if (FlowTimeout.hasPassed(LOWMARK_TIMEOUT)) {
+  if (FlowTimeout.hasPassed(LOWMARK_TIMEOUT)) 
+  {
     Shutdown(
-      FF("NO FLOW alert!" ),
-      FF("Chk WATER VALVES" ),
+      //  1234567890123456
+      FF("NO FLOW! Chk WTR" ),
       ABORT);
   }
 
-  if (TankTimeout.hasPassed(HIGHMARK_TIMEOUT)) {
-    TankTimeout.stop();
+  if (TankTimeout.hasPassed(HIGHMARK_TIMEOUT)) 
+  {
     Shutdown(
-      FF("TANK OVERFLOW!" ),
-      FF("Chk TANK & SENS!" ),
+      //  1234567890123456
+      FF("Tank Timout!" ),
       ABORT);
   }
 
@@ -576,12 +691,11 @@ void loop() {
   sw_HighMark.loop();
   sw_LowMark.loop();
 
-  lcd_status();
-
-  if (sw_LowMark.pressed() && !sw_HighMark.pressed()) {
+  if (sw_LowMark.pressed() && !sw_HighMark.pressed()) 
+  {
     Shutdown(
-      FF("INVALID sensors!" ),
-      FF("Emergency STOP!" ),
+      //  1234567890123456
+      FF("Sensors error!" ),
       ABORT);
   }
 
