@@ -30,7 +30,7 @@
 
 #include <LowPower.h>               //  https://github.com/rocketscream/Low-Power
 #include <EEPROM.h>
-#include <avr/wdt.h>
+// #include <avr/wdt.h>
 
 // #define DISABLE_LOGGING
 // * 0 - LOG_LEVEL_SILENT     no output 
@@ -134,7 +134,7 @@ typedef enum : char { POWEROFF = 0,
 											ERR_INV_LOWMARK_STATUS,
 											ERR_INV_HIGHMARK_STATUS,
 											ERR_HIGHMARK_UNATTENDED_RELEASE,
-											ERR_LAST = ERR_HIGHMARK_UNATTENDED_RELEASE
+											ERR_LAST
 											
 										} t_ShutdownMode;
 
@@ -159,7 +159,7 @@ long 		fv_pump_total_time    = 0;
 long    fv_pump_total_volume  = 0;
 int 		pump_last_time        = 0;
 int     pump_last_volume      = 0;
-uint32_t fv_errors						= 0;
+byte 		fv_errors[6];
 
 //******************************************************************************************
 //#define LOG(func, s) { Log.func( s ); lcd.print( s ); }
@@ -173,7 +173,7 @@ inline char sw(bool f, char c ='F')
   return f ? c : '_';
 }
 
-#define FLASH_SIGNATURE	0xADB1
+#define FLASH_SIGNATURE	0xADB4
 #define _wflash(fv, l, e_offset)  for(char i=0, *s = (char*)&fv; i < sizeof(fv); EEPROM[e_offset++] = s[i++])
 #define _rflash(fv, l, e_offset)  for(char i=0, *s = (char*)&fv; i < sizeof(fv); s[i++] = EEPROM[e_offset++])
 
@@ -183,6 +183,7 @@ void read_flash()
 	char e_offset = 0;
 	uint16_t sign;
 	
+	Log.notice( FF("read_flash (%d)" CR), __LINE__);
 	_rflash( sign, _, e_offset);
 	if ( sign == FLASH_SIGNATURE )
 	{
@@ -190,7 +191,8 @@ void read_flash()
 		_rflash( fv_pump_owfl, sizeof(fv_pump_owfl), e_offset);
 		_rflash( fv_pump_total_time, sizeof(fv_pump_total_time), e_offset);
 		_rflash( fv_pump_total_volume, sizeof(fv_pump_total_volume), e_offset);
-		_rflash( fv_errors, _, e_offset);
+		// _rflash( fv_errors, _, e_offset);
+		for(byte i=0, *s = fv_errors; i < sizeof(fv_errors); s[i++] = EEPROM[e_offset++]);
 	}
 	else 
 		write_flash();
@@ -200,13 +202,15 @@ void write_flash(uint16_t sign)// = FLASH_SIGNATURE)
 {
 	char e_offset = 0;
 	
+	Log.notice( FF("write_flash (%d)" CR), __LINE__);
 	_wflash( sign, _, e_offset);
 	_wflash( fv_pump_cnt, sizeof(fv_pump_cnt), e_offset);
 	_wflash( fv_pump_owfl, sizeof(fv_pump_owfl), e_offset);
 	_wflash( fv_pump_total_time, sizeof(fv_pump_total_time), e_offset);
 	_wflash( fv_pump_total_volume, sizeof(fv_pump_total_volume), e_offset);
 	_wflash( fv_pump_total_volume, sizeof(fv_pump_total_volume), e_offset);
-	_wflash( fv_errors, _, e_offset);
+	// _wflash( fv_errors, _, e_offset);
+	for(byte i=0, *s = fv_errors; i < sizeof(fv_errors); EEPROM[e_offset++] = s[i++]);
 }
 
 /* 
@@ -325,7 +329,7 @@ void lcd_status()
 					pump_last_volume
 					);
 	lcd.print(buf);
-	Log.notice("%s" CR, buf);
+	Log.notice( FF("%s" CR), buf);
 	
   // lcd.print( s );
   // lcd.print( c1 = sw(sw_Overflow.pressed(), 'O') );
@@ -343,11 +347,23 @@ void lcd_status()
   lcd.setCursor(0, 1);
 }
 
+void sprintErrors(char* buf)
+{
+		// char buf[sizeof(fv_errors)*2+2];
+		
+		for(char i=0, *s=buf; i<sizeof(fv_errors); s+=sprintf(s, "%02X", fv_errors[i++]))
+				Log.notice( "%X", fv_errors[i]) ;
+			
+		Log.notice( FF("%s (%d)" CR), buf, __LINE__);
+		
+}
 
 void lcd_statistic(uint8_t mode=0)
 {
 												 //12    34567890123456
 	char buf[LCD_WIDTH+1] = "T ";//00000 V 000000";
+	char buf_err[sizeof(fv_errors)*2+2];
+	
   switch (mode)
   {
     case 0:
@@ -360,7 +376,8 @@ void lcd_statistic(uint8_t mode=0)
 			Log.notice( FF("%s" CR), buf);
 
       lcd.setCursor(0, 1);
-			sprintf( buf, "C %05u OF %05d", fv_pump_cnt, fv_pump_owfl);
+			sprintErrors(buf_err);
+			sprintf( buf, "%03uE%s", fv_pump_cnt, buf_err); //fv_pump_owfl);
 			lcd.print(buf);
  			Log.notice( FF("%s" CR), buf);
 			break;
@@ -485,29 +502,27 @@ void _shutdown(t_ShutdownMode mode = POWEROFF)
 void Shutdown(fchar s1, t_ShutdownMode mode = POWEROFF)
 {
 	
-	switch (mode)
+	if (mode != POWEROFF && mode > ERR_LAST) mode = ABORT;
+	if (mode != POWEROFF)
 	{
-		default:
-			mode = ABORT;
-		case ABORT: case 
-			ERR_OVERFLOW: case 
-			ERR_WATHCDOG: case 
-			
-			ERR_NO_FLOW: case 
-			ERR_TANK_TIMEOUT: case 
-			
-			ERR_START_ABORTED_PUMP: case 
-			ERR_INVALID_SENSORS: case 
-			ERR_INV_LOWMARK_STATUS: case 
-			ERR_INV_HIGHMARK_STATUS: case 
-			ERR_HIGHMARK_UNATTENDED_RELEASE:
-			{
-				byte shift = mode - ABORT;
-				pump = PUMP_ABORT;
-				Log.notice( FF("Shutdown mode %u %d (%d)" CR), mode, shift, __LINE__);
-			}
-		case POWEROFF:
-			break;		
+		byte a;
+		byte shift = mode - ABORT;
+		byte &err = fv_errors[shift>>1];
+		Log.notice( FF("shift %d" CR), shift);
+		
+		if (shift & 1) // байты задом наперед
+			err+=((err&0x0f)<0x0f)?0x01:0;
+		else
+			err+=((err&0xf0)<0xf0)?0x10:0;
+		
+		pump = PUMP_ABORT;
+		
+		{
+			char buf[20];
+			sprintErrors(buf);
+			Log.notice( FF("Shutdown mode %d %d %x %d %s (%d)" CR), mode, shift, err, sizeof(fv_errors), buf, __LINE__);
+		}
+
 	}
 	
 	// if (mode != POWEROFF)
@@ -532,7 +547,7 @@ void Shutdown(fchar s1, t_ShutdownMode mode = POWEROFF)
   _shutdown(mode);
 }
 
-
+/* 
 void A_Watchdog()
 {
   wdt_disable();
@@ -540,7 +555,8 @@ void A_Watchdog()
   SETFLAG(f_WDT);
   //PumpOff();
 }
-
+ */
+ 
 //***********************************************************************************************************************************************************
 
 void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
@@ -700,7 +716,8 @@ ISR(INT1_vect)
 
 }
  */
- 
+
+#ifdef WatchDog_h
 //volatile uint8_t  = 0;
 ISR(WDT_vect) {
 #ifdef WatchDog_h
@@ -717,10 +734,11 @@ ISR(WDT_vect) {
   //if (++f_WDT == 0) ++f_WDT;
   SETFLAG(f_WDT);
 }
-
+#endif
 
 void log_internal_state(int l_cnt)
 {
+#if (LOG_LEVEL == LOG_LEVEL_VERBOSE)
     unsigned long e1 =   FlowTimeout.elapsed();
     unsigned long e2 =   TankTimeout.elapsed();
 		unsigned long e3 =   LCD_Timeout.elapsed();
@@ -734,6 +752,7 @@ void log_internal_state(int l_cnt)
 							 sw( FlowTimeout.isRunning(), 'R') , e1, sw( TankTimeout.isRunning(), 'R'), e2, 
 							 sw( LCD_Timeout.isRunning(), 'R'), e3, sw( StatDelay.isRunning(), 'R'), e4
 		);
+#endif
 }
 
 
@@ -760,6 +779,9 @@ void setup() {
 	Log.notice( FF("WatchDog::init(A_Watchdog, OVF_8000MS, STOP);" CR) );
   WatchDog::init(A_Watchdog, OVF_8000MS, STOP);
 #endif
+	
+	for (char i=0; i<sizeof(fv_errors); fv_errors[i++]=i);
+	
 	// write_flash(0); // только один раз для платы
 	read_flash();
 
@@ -774,13 +796,16 @@ void setup() {
 	StatDelay.start();
 
 	PORTD |= (1 << PORTD5) | (1 << PORTD6) | (1 << PORTD6);
-  //PORTD &= 0b11100000;
+  
   // разрешение прерываний INT0 и INT1
   //  EIMSK  =  (1<<INT0)  | (1<<INT1);
+	
   // настройка срабатывания прерываний на любому изменению
   //EICRA  =  (0<<ISC11) | (1<<ISC10) | (0<<ISC01) | (1<<ISC00);
+	
   // разрешение прерываний с портов B (PCINT[7:0]) и D (PCINT[23:16]), и запрет с порта C (PCINT[14:8])
   PCICR  |= (1 << PCIE2) | (0 << PCIE1) | (0 << PCIE0);
+	
   // маскирование всех ног, кроме PB0 и PD7 - по одной на PCINT0 и PCINT2
   //PCMSK0 |= (0 << PCINT7)  | (0 << PCINT6)  | (0 << PCINT5)  | (0 << PCINT4)  | (0 << PCINT3)  | (0 << PCINT2)  | (0 << PCINT1)  | (1 << PCINT0);
   //PCMSK1 |=                (0 << PCINT14) | (0 << PCINT13) | (0 << PCINT12) | (0 << PCINT11) | (0 << PCINT10) | (0 << PCINT9)  | (0 << PCINT8);
