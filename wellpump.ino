@@ -42,14 +42,17 @@
 // * 6 - LOG_LEVEL_VERBOSE    all 
 #define LOG_LEVEL			LOG_LEVEL_TRACE
 #include <ArduinoLog.h>             // https://github.com/thijse/Arduino-Log/
+#include <avr/pgmspace.h>
 
 typedef const __FlashStringHelper* fchar;
 //const char LOG_AS[] PROGMEM =
 
-//fchar tmp_str = NULL;
-//#define FF(a)       ( tmp_str = F(a))
 //#define FF(a) 			(a)
 #define FF(a)       F(a)
+
+// const char STR_D_CR[] PROGMEM  = ("%s (line:%d)" CR);
+fchar STR_D_CR;
+
 
 #include <DebounceEvent.h>          // https://github.com/xoseperez/debounceevent
 #include "Chrono.h"
@@ -118,7 +121,7 @@ Chrono StatDelay(Chrono::MILLIS);
 
 volatile uint8_t f_WDT = 0;
 
-void _P_ShutdownMode() {}
+void _P_ShutdownMode() {} // просто отметка в редакторе
 
 //******************************************************************************************
 typedef enum : char { POWEROFF = 0,  
@@ -137,11 +140,33 @@ typedef enum : char { POWEROFF = 0,
 											ERR_LAST
 											
 										} t_ShutdownMode;
+						
+// ErrorNames[t_ShutdownMode-ABORT]			
+																	// 1234567890123456
+const  char ErrorMsg_1[] PROGMEM 	= "FATAL ABORT!";
+const  char ErrorMsg_2[] PROGMEM 	= "OVRFLW DETECTED!";
+const  char ErrorMsg_3[] PROGMEM 	= "WATCHDOG ALERT!";
+const  char ErrorMsg_4[] PROGMEM 	= "NO FLOW! Chk WTR";
+const  char ErrorMsg_5[] PROGMEM 	= "Tank Timout!";
+const  char ErrorMsg_6[] PROGMEM 	= "Start failed!!!";
+const  char ErrorMsg_7[] PROGMEM 	= "INVALID sensors!";
+const  char ErrorMsg_8[] PROGMEM 	= "LM FTL! Chk SENS";
+const  char ErrorMsg_9[] PROGMEM 	= "HM FTL! Chk SENS";
+const  char ErrorMsg_10[] PROGMEM = "HM ERR! Chk SENS";
 
-void Shutdown(fchar s1, //fchar s2,
-              t_ShutdownMode mode);
-void Shutdown(const char*  s1, //const char*  s2,
-              t_ShutdownMode mode);
+				
+const  char* const  ErrorMsg[] PROGMEM = {
+										ErrorMsg_1, ErrorMsg_2, ErrorMsg_3, ErrorMsg_4, ErrorMsg_5,
+										ErrorMsg_6, ErrorMsg_7, ErrorMsg_8, ErrorMsg_9, ErrorMsg_10
+};
+
+
+void Shutdown(t_ShutdownMode mode);
+void Shutdown(t_ShutdownMode mode, fchar s1); //,fchar s2,);
+// void Shutdown(t_ShutdownMode mode = POWEROFF, fchar s1 = NULL); //,fchar s2,);
+// void Shutdown(t_ShutdownMode mode, fchar s1); //,fchar s2,);
+// void Shutdown(t_ShutdownMode mode = POWEROFF, const char* s1 ); //, const char*  s2,
+
 
 void log_internal_state();
 							
@@ -153,13 +178,19 @@ typedef enum : byte { PUMP_OFF = 0,  PUMP_ABORT = 1, PUMP_ON = 2, PUMP_STANBDY =
 t_PumpStatus pump 		= PUMP_OFF;
 
 // statistic
-int 		fv_pump_cnt			      = 0;
-int     fv_pump_owfl          = 0;
-long 		fv_pump_total_time    = 0;
-long    fv_pump_total_volume  = 0;
+struct t_flash_var_pump {
+				int 		cnt;
+				int     owfl;
+				long 		total_time;
+				long    total_volume;
+								};
+								
+t_flash_var_pump	fv_pump = {0,0,0,0};
+byte 		fv_errors[6];
+
 int 		pump_last_time        = 0;
 int     pump_last_volume      = 0;
-byte 		fv_errors[6];
+
 
 //******************************************************************************************
 //#define LOG(func, s) { Log.func( s ); lcd.print( s ); }
@@ -173,73 +204,56 @@ inline char sw(bool f, char c ='F')
   return f ? c : '_';
 }
 
-#define FLASH_SIGNATURE	0xADB4
-#define _wflash(fv, l, e_offset)  for(char i=0, *s = (char*)&fv; i < sizeof(fv); EEPROM[e_offset++] = s[i++])
-#define _rflash(fv, l, e_offset)  for(char i=0, *s = (char*)&fv; i < sizeof(fv); s[i++] = EEPROM[e_offset++])
+#define FLASH_SIGNATURE	0xADB0
+// #define _wflash(fv, l, e_offset)  for(char i=0, *s = (char*)&fv; i < sizeof(fv); EEPROM[e_offset++] = s[i++])
+// #define _rflash(fv, l, e_offset)  for(char i=0, *s = (char*)&fv; i < sizeof(fv); s[i++] = EEPROM[e_offset++])
+
 
 void write_flash(uint16_t sign = FLASH_SIGNATURE);
 void read_flash()
 {
-	char e_offset = 0;
+	int e_offset = 0;
 	uint16_t sign;
 	
-	Log.notice( FF("read_flash (%d)" CR), __LINE__);
-	_rflash( sign, _, e_offset);
+	EEPROM.get( e_offset, sign );
+	Log.notice( STR_D_CR, ("read_flash") , sign);
+	e_offset += sizeof(sign);
 	if ( sign == FLASH_SIGNATURE )
 	{
-		_rflash( fv_pump_cnt, sizeof(fv_pump_cnt), e_offset);
-		_rflash( fv_pump_owfl, sizeof(fv_pump_owfl), e_offset);
-		_rflash( fv_pump_total_time, sizeof(fv_pump_total_time), e_offset);
-		_rflash( fv_pump_total_volume, sizeof(fv_pump_total_volume), e_offset);
-		// _rflash( fv_errors, _, e_offset);
-		for(byte i=0, *s = fv_errors; i < sizeof(fv_errors); s[i++] = EEPROM[e_offset++]);
+		EEPROM.get( e_offset, fv_pump );
+		e_offset += sizeof(fv_pump);
+		EEPROM.get( e_offset, fv_errors );
 	}
 	else 
 		write_flash();
 }
 
+	
+#define EEPROM_update(e_offset, v)		EEPROM.update( e_offset, v ); e_offset += sizeof(v);
+
 void write_flash(uint16_t sign)// = FLASH_SIGNATURE)
 {
-	char e_offset = 0;
+	int e_offset = 0;
 	
-	Log.notice( FF("write_flash (%d)" CR), __LINE__);
-	_wflash( sign, _, e_offset);
-	_wflash( fv_pump_cnt, sizeof(fv_pump_cnt), e_offset);
-	_wflash( fv_pump_owfl, sizeof(fv_pump_owfl), e_offset);
-	_wflash( fv_pump_total_time, sizeof(fv_pump_total_time), e_offset);
-	_wflash( fv_pump_total_volume, sizeof(fv_pump_total_volume), e_offset);
-	_wflash( fv_pump_total_volume, sizeof(fv_pump_total_volume), e_offset);
-	// _wflash( fv_errors, _, e_offset);
-	for(byte i=0, *s = fv_errors; i < sizeof(fv_errors); EEPROM[e_offset++] = s[i++]);
+	Log.notice( STR_D_CR, ("write_flash"), sign);;
+	
+	EEPROM.update( e_offset, sign );
+	e_offset += sizeof(sign);
+	
+	// EEPROM.update( e_offset, fv_pump );
+	// e_offset += sizeof(fv_pump);
+	
+	EEPROM_update( e_offset, fv_pump.cnt );
+	EEPROM_update( e_offset, fv_pump.owfl );
+	EEPROM_update( e_offset, fv_pump.total_time );
+	EEPROM_update( e_offset, fv_pump.total_volume );
+	
+	for(byte i=0; i<sizeof(fv_errors); ) 
+		EEPROM.update( e_offset++, fv_errors[i++] );
+	
+	delay(5); // чтобы точно записалось
 }
 
-/* 
-inline 
-void _wflash(char *s, size_t l, char& e_offset) { for(char i=0; i < l; EEPROM[e_offset++] = s[i++]); }
-inline 
-void _rflash(char *s, size_t l, char& e_offset) { for(char i=0; i < l; s[i++] = EEPROM[e_offset++]); }
-
-	
-void read_flash()
-{
-	char e_offset = 0;
-	
-	_rflash( (char*)&fv_pump_cnt, sizeof(fv_pump_cnt), e_offset);
-	_rflash( (char*)&fv_pump_owfl, sizeof(fv_pump_owfl), e_offset);
-	_rflash( (char*)&fv_pump_total_time, sizeof(fv_pump_total_time), e_offset);
-	_rflash( (char*)&fv_pump_total_volume, sizeof(fv_pump_total_volume), e_offset);
-}
-
-void write_flash()
-{
-	char e_offset = 0;
-	
-	_wflash( (char*)&fv_pump_cnt, sizeof(fv_pump_cnt), e_offset);
-	_wflash( (char*)&fv_pump_owfl, sizeof(fv_pump_owfl), e_offset);
-	_wflash( (char*)&fv_pump_total_time, sizeof(fv_pump_total_time), e_offset);
-	_wflash( (char*)&fv_pump_total_volume, sizeof(fv_pump_total_volume), e_offset);
-}
- */
 
 void lcd_on(bool timeout = false)
 {
@@ -329,7 +343,7 @@ void lcd_status()
 					pump_last_volume
 					);
 	lcd.print(buf);
-	Log.notice( FF("%s" CR), buf);
+	Log.notice( STR_D_CR, buf, __LINE__);
 	
   // lcd.print( s );
   // lcd.print( c1 = sw(sw_Overflow.pressed(), 'O') );
@@ -351,10 +365,9 @@ void sprintErrors(char* buf)
 {
 		// char buf[sizeof(fv_errors)*2+2];
 		
-		for(char i=0, *s=buf; i<sizeof(fv_errors); s+=sprintf(s, "%02X", fv_errors[i++]))
-				Log.notice( "%X", fv_errors[i]) ;
+		for(char i=0, *s=buf; i<sizeof(fv_errors); s+=sprintf(s, "%02X", fv_errors[i++]));
 			
-		Log.notice( FF("%s (%d)" CR), buf, __LINE__);
+		Log.notice( STR_D_CR, buf, __LINE__);
 		
 }
 
@@ -370,16 +383,16 @@ void lcd_statistic(uint8_t mode=0)
     default:  // пока так
 			
       lcd.setCursor(0, 0);
-			sprintTime5(buf+2, fv_pump_total_time);
-			sprintf(buf+7, " V %06u", fv_pump_total_volume);
+			sprintTime5(buf+2, fv_pump.total_time);
+			sprintf(buf+7, " V %06d", fv_pump.total_volume);
       lcd.print(buf);
-			Log.notice( FF("%s" CR), buf);
+			Log.notice( STR_D_CR, buf, __LINE__);
 
       lcd.setCursor(0, 1);
 			sprintErrors(buf_err);
-			sprintf( buf, "%03uE%s", fv_pump_cnt, buf_err); //fv_pump_owfl);
+			sprintf( buf, "%03dE%s", fv_pump.cnt, buf_err); //fv_pump.owfl);
 			lcd.print(buf);
- 			Log.notice( FF("%s" CR), buf);
+ 			Log.notice( STR_D_CR, buf, __LINE__);
 			break;
   }
 
@@ -403,10 +416,19 @@ void PumpOff()
   lcd_status();
 	
   // stat
-  fv_pump_total_time += pump_last_time;
-  fv_pump_total_volume += pump_last_volume;
+	Log.notice( STR_D_CR, ("PumpOff"), __LINE__);
+	lcd_statistic();
+	delay(5000);
+	
+  fv_pump.total_time += pump_last_time;
+  fv_pump.total_volume += pump_last_volume;
 	write_flash();
-
+	
+	// Log.notice( STR_D_CR, "PumpOff", __LINE__);
+	
+	lcd_statistic();
+	delay(5000);
+	
   Log.notice( FF( "done: %i seconds" CR), pump_last_time );
 
   FlowTimeout.stop();
@@ -423,7 +445,7 @@ void PumpOn()
   {
     Shutdown(
       //  1234567890123456
-      FF("Start failed!!!" ),
+      // FF("Start failed!!!" ),
       ERR_START_ABORTED_PUMP);
     return;
   }
@@ -431,7 +453,7 @@ void PumpOn()
   Log.notice( FF("Pump ON - " ) );
 
   // stat
-  fv_pump_cnt++;
+  fv_pump.cnt++;
 
   digitalWrite(SW_VALVE, HIGH);
   digitalWrite(SW_MOTOR, HIGH);
@@ -441,6 +463,7 @@ void PumpOn()
   FlowTimeout.restart();
   TankTimeout.restart();
   StatDelay.restart();
+	
   pump = PUMP_ON;
 
 	lcd_on();
@@ -456,7 +479,7 @@ void _shutdown(t_ShutdownMode mode = POWEROFF)
   return;
 #endif
 
-	log_internal_state(-1);
+	// log_internal_state(-1);
 
   if (mode == POWEROFF)
   {
@@ -497,10 +520,13 @@ void _shutdown(t_ShutdownMode mode = POWEROFF)
 #endif
 }
 
-
+										
 // печатает текст и останавливает устройство
-void Shutdown(fchar s1, t_ShutdownMode mode = POWEROFF)
+// void Shutdown(t_ShutdownMode mode = POWEROFF, fchar s1 = NULL)
+
+void Shutdown(t_ShutdownMode mode)
 {
+	char buf[20];
 	
 	if (mode != POWEROFF && mode > ERR_LAST) mode = ABORT;
 	if (mode != POWEROFF)
@@ -517,11 +543,8 @@ void Shutdown(fchar s1, t_ShutdownMode mode = POWEROFF)
 		
 		pump = PUMP_ABORT;
 		
-		{
-			char buf[20];
-			sprintErrors(buf);
-			Log.notice( FF("Shutdown mode %d %d %x %d %s (%d)" CR), mode, shift, err, sizeof(fv_errors), buf, __LINE__);
-		}
+		sprintErrors(buf);
+		Log.notice( FF("Shutdown mode %d %d %x %d %s (%d)" CR), mode, shift, err, sizeof(fv_errors), buf, __LINE__);
 
 	}
 	
@@ -535,9 +558,11 @@ void Shutdown(fchar s1, t_ShutdownMode mode = POWEROFF)
   // lcd_on(pump != PUMP_ABORT);
 	lcd_on();
   lcd_status();
-  lcd.print( s1 );
-
-  Log.fatal( "%S " CR, s1 );
+	
+	strcpy_P(buf, (char*)pgm_read_word(&(ErrorMsg[mode-ABORT])));
+	
+  lcd.print( buf );
+  Log.fatal( STR_D_CR, buf, __LINE__);
 
 #ifdef WatchDog_h
   WatchDog::stop();
@@ -577,7 +602,7 @@ void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
       } else {
         Shutdown(
           //  1234567890123456
-          FF("INVALID sensors!"),
+          // FF("INVALID sensors!"),
           ERR_INVALID_SENSORS);
       }
       break;
@@ -587,7 +612,7 @@ void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
     default:
       Shutdown(
         //  1234567890123456
-        FF("LM FTL! Chk SENS" ),
+        // FF("LM FTL! Chk SENS" ),
         ERR_INV_LOWMARK_STATUS);
   }
 
@@ -616,7 +641,7 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
       {
         Shutdown(
           //  1234567890123456
-          FF("HM ERR! Chk SENS"),
+          // FF("HM ERR! Chk SENS"),
           ERR_HIGHMARK_UNATTENDED_RELEASE);
       }
       else {
@@ -630,7 +655,7 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
     default:
       Shutdown(
         //  1234567890123456
-        FF("HM FTL! Chk SENS"),
+        // FF("HM FTL! Chk SENS"),
         ERR_INV_HIGHMARK_STATUS);
   }
 }
@@ -641,12 +666,12 @@ void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
   Log.trace(FF(CR "OVERFLOW: %i %x" CR), f_Overflow, event);
 // #endif
 
-  fv_pump_owfl++;
+  fv_pump.owfl++;
 
   // any change is dangerous!!!
   Shutdown(
     //  1234567890123456
-    FF("OVRFLW DETECTED!" ),
+    // FF("OVRFLW DETECTED!" ),
     ERR_OVERFLOW);
 }
 
@@ -759,7 +784,8 @@ void log_internal_state(int l_cnt)
 //***********************************************************************************************************************************************************
 
 
-void setup() {
+void setup() 
+{
   Serial.begin(115200);
   while (!Serial);
   Serial.println(FF(CR "In the begining...") );
@@ -772,6 +798,7 @@ void setup() {
   //  lcd.setCursor(0,1);
   //  lcd.print("Starting...");
 
+	STR_D_CR = FF("%s (line:%d)" CR);
   Log.begin(LOG_LEVEL, &Serial);
   Log.notice( FF(CR "******************************************" CR) );                     // Info string with Newline
 
@@ -780,10 +807,15 @@ void setup() {
   WatchDog::init(A_Watchdog, OVF_8000MS, STOP);
 #endif
 	
+	Log.notice( STR_D_CR, ("test setup"), __LINE__);
 	for (char i=0; i<sizeof(fv_errors); fv_errors[i++]=i);
+	lcd_statistic();
+	delay(5000);
 	
 	// write_flash(0); // только один раз для платы
 	read_flash();
+	lcd_statistic();
+	Log.notice( STR_D_CR, ("test setup"), __LINE__);
 
   pinMode(SW_MOTOR, OUTPUT);
   pinMode(SW_VALVE, OUTPUT);
@@ -860,7 +892,7 @@ void loop() {
   {
     Shutdown(
       //  1234567890123456
-      FF("WATCHDOG ALERT!" ),
+      // FF("WATCHDOG ALERT!" ),
       ERR_WATHCDOG);
   }
 
@@ -873,7 +905,7 @@ void loop() {
 			// lcd_off:
 			lcd.clear();
 			lcd_status();
-			lcd.print("READY! cnt="); lcd.print(fv_pump_cnt);
+			lcd.print("READY! cnt="); lcd.print(fv_pump.cnt);
 			pump = PUMP_STANBDY;		
 		}
 		
@@ -899,7 +931,7 @@ void loop() {
   {
     Shutdown(
       //  1234567890123456
-      FF("NO FLOW! Chk WTR" ),
+      // FF("NO FLOW! Chk WTR" ),
       ERR_NO_FLOW);
   }
 
@@ -907,7 +939,7 @@ void loop() {
   {
     Shutdown(
       //  1234567890123456
-      FF("Tank Timout!" ),
+      // FF("Tank Timout!" ),
       ERR_TANK_TIMEOUT);
   }
 
@@ -921,7 +953,7 @@ void loop() {
   {
     Shutdown(
       //  1234567890123456
-      FF("Sensors error!" ),
+      // FF("Sensors error!" ),
       ERR_INVALID_SENSORS);
   }
 
