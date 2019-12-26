@@ -196,14 +196,15 @@ inline char sw(bool f, char c ='F')
   return f ? c : '_';
 }
 
-int freeRam () {
+int freeRam () 
+{
   extern int __heap_start, *__brkval; 
   int v; 
   return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval); 
 }
 
-#define FLASH_SIGNATURE	0xADB2
-#define FLASH_OFFSET		0x20
+#define FLASH_SIGNATURE	0xADB3
+#define FLASH_OFFSET		0x51
 
 void print_flash(int l)
 {
@@ -224,32 +225,30 @@ bool read_flash()
 	uint16_t sign;
 	
 	EEPROM_f( get, e_offset, sign );
-	e_offset += sizeof(sign);
-	// Log.notice(STR_SXd_CR, FF("sign = "), sign, __LINE__);
+	Log.notice(STR_SXd_CR, FF("read_flash: sign = "), sign, __LINE__);
 	
 	if ( sign == FLASH_SIGNATURE )
 	{
 		// Log.notice(STR_SXd_CR, FF(""), 0, __LINE__);
-		EEPROM.get( e_offset, fv_pump );
-		e_offset += sizeof(fv_pump);
-		EEPROM.get( e_offset, fv_errors );
+		// EEPROM_f( get, e_offset, fv_pump );
+		// EEPROM.get( e_offset, fv_errors );
 		EEPROM_f( get, e_offset, fv_pump.cnt );
 		EEPROM_f( get, e_offset, fv_pump.owfl );
 		EEPROM_f( get, e_offset, fv_pump.total_time );
 		EEPROM_f( get, e_offset, fv_pump.total_volume );
 	
-		for(byte i=0; i<sizeof(fv_errors); i++ ) 
+		for(size_t i=0; i<sizeof(fv_errors); i++ ) 
 			EEPROM_f( get, e_offset, fv_errors[i] );
 		
-		// Log.notice(FF("read_flash done %d %d" CR), FLASH_OFFSET, e_offset);
+		Log.notice(FF("read_flash done %d %d" CR), FLASH_OFFSET, e_offset);
 		
 		print_flash(__LINE__);
 		return true;
 	}
 	else 
 	{
-		Log.notice(STR_SXd_CR, FF(""), 0, __LINE__);
-		for (byte i=0; i<sizeof(fv_errors); fv_errors[i++]=0);
+		// Log.notice(STR_SXd_CR, FF(""), 0, __LINE__);
+		for (size_t i=0; i<sizeof(fv_errors); fv_errors[i++]=0);
 		print_flash(__LINE__);
 		write_flash(FLASH_SIGNATURE);
 		return false;
@@ -271,7 +270,7 @@ void write_flash(uint16_t sign)
 	EEPROM_f( put, e_offset, fv_pump.total_time );
 	EEPROM_f( put, e_offset, fv_pump.total_volume );
 	
-	for(byte i=0; i<sizeof(fv_errors); i++) 
+	for(size_t i=0; i<sizeof(fv_errors); i++) 
 		EEPROM_f( put, e_offset, fv_errors[i] );
 	
 	Log.notice(FF("write_flash done %d %d" CR), FLASH_OFFSET, e_offset);
@@ -299,14 +298,17 @@ void lcd_on(bool timeout = false)
 
 char* sprintTime4(char* s, unsigned long v)
 {
-  if (v < 1000)
-    sprintf(s, "%03lus", v);            // 000s
-  else if (v < 100*60)
-    sprintf(s, "%03lum", v/60);         // 000m
-  else if (v < (unsigned long)10*60*60)
-    sprintf(s, "%3.1fh", (float)v/3600);// 0.0h
+  if (v < 600)
+    sprintf(s, ("%03us"), (unsigned)  v);            // 000s
+  else if (v < 6000)
+    sprintf(s, ("%03um"), (unsigned) (v/60) );         // 000m
+  else if (v < 36000 )
+	{
+		v /= 360;
+    sprintf(s, ("%u.%ch"), (unsigned) v/10, (char) (v%10) + '0' );		// 0.0h
+	}
   else
-    sprintf(s, "%03luh", v/3600);       // 000h
+    sprintf(s, ("%03uh"), (unsigned) (v/3600) );       // 000h
 
   return s;
 }
@@ -314,16 +316,16 @@ char* sprintTime4(char* s, unsigned long v)
 
 char* sprintTime5(char* s, unsigned long v)
 {
-  if (v < 10000)
-    sprintf(s, "%04lus", v);            // 0000s
-  else if (v < 100*60)
-    sprintf(s, "%4.1fm", (float)v/60);  // 00.0m
-  else if (v < (unsigned long)10*60*60)
-    sprintf(s, "%4.2fh", (float)v/3600);// 0.00h
-  else if (v < (unsigned long)100*60*60)
-    sprintf(s, "%4.1fh", (float)v/3600);// 00.0h
+  if (v < 600)
+    sprintf(s, ("%04us"),  (unsigned) v);       // 0000s
+  else if ( (v/=6) < 900 )  // < 6000
+    sprintf(s, ("%02u.%cm"),  (unsigned) v/10,  (char) (v%10) + '0'); //00.1m
+  else if ( (v/=6) < 1000 )	
+		sprintf(s, ("%u.%02dh"),  (unsigned) v/100, (unsigned) v%100 );// 0.00h
+  else if ( (v/=10) < 1000 )
+    sprintf(s, ("%02u.%ch"), 	(unsigned) v/10,  (char) (v%10) + '0' );// 00.0h
   else
-    sprintf(s, "%04luh", v/3600);       // 0000h
+    sprintf(s, ("%04uh"),  		(unsigned) v/10 );       // 0000h
 
   return s;
 }
@@ -406,7 +408,8 @@ void lcd_statistic(uint8_t mode=0)
       lcd.setCursor(0, 1);
 			
 			sh = sprintf( buf, "%03dE", fv_pump.cnt);
-			sprintErrors( buf + sh );; //fv_pump.owfl);
+			for( size_t i=sh+sprintErrors( buf + sh ); i<=LCD_WIDTH; buf[i++]=' '); //fv_pump.owfl);
+			buf[LCD_WIDTH] = 0;
 			
 			lcd.print(buf);
 			Log.notice( FF("stat (%d): %i sh %i buf %s" CR), __LINE__, sh, buf);
@@ -420,7 +423,7 @@ void lcd_statistic(uint8_t mode=0)
 
 void PumpOff()
 {
-  Log.notice( FF("Pump OFF - " ) );
+  Log.notice( FF("Pump OFF - done: %i seconds" CR), pump_last_time );
 
   //noInterrupts();
   digitalWrite(SW_VALVE, LOW);
@@ -437,8 +440,11 @@ void PumpOff()
   fv_pump.total_time += pump_last_time;
   fv_pump.total_volume += pump_last_volume;
 	write_flash();
+
+  // Log.notice( FF( "done: %i seconds" CR), pump_last_time );
 	
-  Log.notice( FF( "done: %i seconds" CR), pump_last_time );
+	// read_flash();
+	
 
   FlowTimeout.stop();
   TankTimeout.stop();
@@ -531,13 +537,13 @@ void Shutdown(t_ShutdownMode mode)
 	if (mode < POWEROFF)
 	{
 		byte &err = fv_errors[mode - ABORT];
-		err += ((err&0x0f)<0x0f)?0x01:0;
+		err += (err^0x0f)?1:0;
 		
 		pump = PUMP_ABORT;
-		
+/* 		
 		sprintErrors(buf);
 		Log.notice( FF("Shutdown mode %d %X %X %d %s (%d)" CR), mode, &err, fv_errors, sizeof(fv_errors), buf, __LINE__);
-
+ */
 	}
 	
 	if (mode == STANDBY)
@@ -837,7 +843,25 @@ uint8_t l_cnt = 0;
 
 void loop() 
 {
+	char s_time[20];
+	pump_last_time += 3;
+  pump_last_volume = SPEED_LPS * pump_last_time;
+	
+	fv_pump.cnt++;
+	fv_pump.total_time += 13;
+	
+	sprintf(buf, "%s %04u", 
+					sprintTime4(s_time, pump_last_time),
+					pump_last_volume
+					);
+	// lcd.print(buf);
+	Log.notice( STR_sd_CR, buf, __LINE__);
+	
+	lcd_statistic();
+	delay(100);
 
+	
+/* 
 #ifdef LowPower_h
 	// дремать если мотор выключен
   if ( (pump == PUMP_OFF || pump == PUMP_STANBDY) && 
@@ -875,15 +899,15 @@ void loop()
 		}
   }
 
-/* 
-  if (0 & f_WDT) 
-  {
-    Shutdown(
-      //  1234567890123456
-      // FF("WATCHDOG ALERT!" ),
-      ERR_WATHCDOG);
-  }
- */
+
+  // if (0 & f_WDT) 
+  // {
+    // Shutdown(
+      // //  1234567890123456
+      // // FF("WATCHDOG ALERT!" ),
+      // ERR_WATHCDOG);
+  // }
+
 
 
 	if (LCD_Timeout.hasPassed(LCD_TIMEOUT)) 
@@ -929,7 +953,8 @@ void loop()
   }
 
   // put your main code here, to run repeatedly:
-
+ */
+ 
   sw_Overflow.loop();
   sw_HighMark.loop();
   sw_LowMark.loop();
