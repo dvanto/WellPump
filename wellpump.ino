@@ -317,6 +317,7 @@ char* sprintTime4(char* s, unsigned long v)
 char* sprintTime5(char* s, unsigned long v)
 {
   if (v < 600)
+	if (v < 600)
     sprintf(s, ("%04us"),  (unsigned) v);       // 0000s
   else if ( (v/=6) < 900 )  // < 6000
     sprintf(s, ("%02u.%cm"),  (unsigned) v/10,  (char) (v%10) + '0'); //00.1m
@@ -325,8 +326,33 @@ char* sprintTime5(char* s, unsigned long v)
   else if ( (v/=10) < 1000 )
     sprintf(s, ("%02u.%ch"), 	(unsigned) v/10,  (char) (v%10) + '0' );// 00.0h
   else
-    sprintf(s, ("%04uh"),  		(unsigned) v/10 );       // 0000h
+ */
 
+// Скетч использует 13756 байт (95%) памяти устройства. Всего доступно 14336 байт.
+// Глобальные переменные используют 797 байт (77%) динамической памяти, оставляя 227 байт для локальных переменных. Максимум: 1024 байт.
+  if (v < 600)
+    sprintf(s, ("%04us"),  (unsigned) v);       // 0000s
+  else if ( v < 5400 )  // < 6000
+	{
+		v /= 6;
+    sprintf(s, ("%02u.%cm"),  (unsigned) v/10,  (char) (v%10) + '0'); //00.1m
+  }
+	else if ( v < 36000 )	
+	{
+		v /= 36;
+		sprintf(s, ("%u.%02dh"),  (unsigned) v/100, (unsigned) v%100 );// 0.00h
+  }
+	else if ( v < 360000 )
+  {
+		v /= 360;
+		sprintf(s, ("%02u.%ch"), 	(unsigned) v/10,  (char) (v%10) + '0' );// 00.0h
+  }
+	else
+  {
+		sprintf(s, ("%04uh"),  		(unsigned) v/3600 );       // 0000h
+	} 
+
+	
   return s;
 }
 
