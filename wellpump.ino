@@ -19,7 +19,7 @@
 
 */
 
-// #define DISABLE_LOGGING
+#define DISABLE_LOGGING
 
 // #include <avr/wdt.h>
 #include <LowPower.h>               //  https://github.com/rocketscream/Low-Power
@@ -68,13 +68,16 @@ LiquidCrystal_PCF8574 			lcd(LCD_PORT);
 #define PIN_HIGHMARK        PD6
 #define PIN_LOWMARK         PD7
 
-#define SW_OVERFLOW         5
-#define SW_HIGH_MARK        6
-#define SW_LOW_MARK         7
+// sensors' pins
+#define SNS_OVERFLOW				5
+#define SNS_HIGH_MARK				6
+#define SNS_LOW_MARK				7
+#define SNS_STATUS					10
 
+// switches' pins
 #define SW_MOTOR            8
 #define SW_VALVE            9
-#define SW_STATUS						10
+
 
 /* 
 #define LOWMARK_TIMEOUT     10 // s
@@ -85,12 +88,12 @@ LiquidCrystal_PCF8574 			lcd(LCD_PORT);
 #define STAT_DELAY			 		500 // ms
  */
  
-#define LOWMARK_TIMEOUT     3 // s
-#define HIGHMARK_TIMEOUT    30 // s = 0,468л/с 200 литров
+#define LOWMARK_TIMEOUT     10 // s
+#define HIGHMARK_TIMEOUT    427 // s = 0,468л/с 200 литров
 #define SPEED_LPS           0.468 // liters per second
-#define LCD_TIMEOUT         (LCD_STAT_TIME+5) // s
+#define LCD_TIMEOUT         (LCD_STAT_TIME+10) // s
 #define LCD_STAT_TIME       5 // s
-#define STAT_DELAY			 		1000 // ms
+#define STAT_DELAY			 		250 // ms
 
 
 //******************************************************************************************
@@ -108,10 +111,10 @@ void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
 void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
 void btn_Status(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
 
-DebounceEvent sw_Overflow		= DebounceEvent(SW_OVERFLOW,	btn_Overflow,	BUTTON_PUSHBUTTON );
-DebounceEvent sw_LowMark		= DebounceEvent(SW_LOW_MARK,	btn_LowMark,	BUTTON_PUSHBUTTON );
-DebounceEvent sw_HighMark		= DebounceEvent(SW_HIGH_MARK,	btn_HighMark,	BUTTON_PUSHBUTTON );
-DebounceEvent sw_Stat				= DebounceEvent(SW_STATUS,		btn_Status,		BUTTON_PUSHBUTTON );
+DebounceEvent sw_Overflow		= DebounceEvent(SNS_OVERFLOW,	btn_Overflow,	BUTTON_PUSHBUTTON );
+DebounceEvent sw_LowMark		= DebounceEvent(SNS_LOW_MARK,	btn_LowMark,	BUTTON_PUSHBUTTON );
+DebounceEvent sw_HighMark		= DebounceEvent(SNS_HIGH_MARK,	btn_HighMark,	BUTTON_PUSHBUTTON );
+DebounceEvent sw_Stat				= DebounceEvent(SNS_STATUS,		btn_Status,		BUTTON_PUSHBUTTON );
 
 Chrono TankTimeout(Chrono::SECONDS);
 Chrono FlowTimeout(Chrono::SECONDS);
