@@ -19,6 +19,7 @@
 
 */
 
+// #define DEBUG_WAKEUPS
 #define DISABLE_LOGGING
 
 // #include <avr/wdt.h>
@@ -56,7 +57,7 @@ fchar STR_sd_CR;
 fchar STR_SXd_CR;
 
 
-/* настройки экарнчика */
+/* настройки экранчика */
 #define	LCD_PORT 						0x27
 #define LCD_WIDTH						16
 LiquidCrystal_PCF8574 			lcd(LCD_PORT);
@@ -92,7 +93,7 @@ LiquidCrystal_PCF8574 			lcd(LCD_PORT);
 #define HIGHMARK_TIMEOUT    427 // s = 0,468л/с 200 литров
 #define SPEED_LPS           0.468 // liters per second
 #define LCD_TIMEOUT         (LCD_STAT_TIME+10) // s
-#define LCD_STAT_TIME       5 // s
+#define LCD_STAT_TIME       7 // s
 #define STAT_DELAY			 		250 // ms
 
 
@@ -101,10 +102,17 @@ LiquidCrystal_PCF8574 			lcd(LCD_PORT);
 //  BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH | BUTTON_SET_PULLUP);
 //  DebounceEvent button = DebounceEvent(BUTTON_PIN, BUTTON_SWITCH | BUTTON_SET_PULLUP);
 
+uint16_t loop_cnt = 0;
+uint8_t  wakeupmode = 0;
+
+#define CNT_DIV 3
+byte v_StatMode = 0;
+
+
 volatile uint8_t f_Overflow = 0;
 volatile uint8_t f_LowMark = 0;
 volatile uint8_t f_HighMark = 0;
-byte v_StatMode = 0;
+
 
 void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
 void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
@@ -157,7 +165,7 @@ const  char ErrorMsg_7[] PROGMEM 	= "INVALID sensors!";
 const  char ErrorMsg_8[] PROGMEM 	= "LM FTL! Chk SENS";
 const  char ErrorMsg_9[] PROGMEM 	= "HM FTL! Chk SENS";
 const  char ErrorMsg_10[] PROGMEM = "HM ERR! Chk SENS";
-const  char ErrorMsg_0[] PROGMEM  = "READY!!! cnt=";
+const  char ErrorMsg_0[] PROGMEM  = "READY! cnt=";
 
 				
 const  char* const  ErrorMsg[] PROGMEM = {
@@ -175,15 +183,18 @@ t_PumpStatus pump 		= PUMP_OFF;
 
 // statistic
 struct t_flash_var_pump {
-				int 						cnt;
-				int     				owfl;
+				uint16_t				sign;
+				unsigned int 		pwr;
+				unsigned int 		cnt;
+				unsigned int 		owfl;
 				unsigned long 	total_time;
 				unsigned long		total_volume;
+				byte						errors[ERR_LAST-ABORT];
 			};
 								
-t_flash_var_pump				fv_pump 							= {0,0,0,0};
-t_flash_var_pump				fv_saved;
-byte										fv_errors[ERR_LAST-ABORT];
+t_flash_var_pump				fv_pump 							= {0, 0, 0, 0, 0, 0};
+// t_flash_var_pump				fv_saved;
+
 
 unsigned 								pump_last_time        = 0;
 unsigned								pump_last_volume      = 0;
@@ -215,15 +226,16 @@ int freeRam ()
 }
 
 #define FLASH_SIGNATURE	0xADB0
-#define FLASH_OFFSET		0x20*2
+#define FLASH_OFFSET		0x20*4
+
 
 void print_flash(int l)
 {
 	sprintErrors(buf);
 	Log.warning(FF("flash(%d): %x %x %x %x err=|%s|" CR), l,
 		(int)fv_pump.cnt, (int)fv_pump.owfl, (int)fv_pump.total_time, (int)fv_pump.total_volume, buf);
-		// fv_errors[0], fv_errors[1], fv_errors[2], fv_errors[3], fv_errors[4], fv_errors[5],
-		// fv_errors[6], fv_errors[7], fv_errors[8], fv_errors[9]);
+		// fv_pump.errors[0], fv_pump.errors[1], fv_pump.errors[2], fv_pump.errors[3], fv_pump.errors[4], fv_pump.errors[5],
+		// fv_pump.errors[6], fv_pump.errors[7], fv_pump.errors[8], fv_pump.errors[9]);
 	
 }
 
@@ -233,26 +245,19 @@ void write_flash(uint16_t sign = FLASH_SIGNATURE);
 bool read_flash()
 {
 	int e_offset = FLASH_OFFSET;
-	uint16_t sign;
+	char *e_buf = (void*)&fv_pump;
+		
+	EEPROM_f( get, e_offset, e_buf[0] );
+	EEPROM_f( get, e_offset, e_buf[1] );
+	Log.notice(STR_SXd_CR, FF("read_flash: sign = "), fv_pump.sign, __LINE__);
+	// Serial.println( fv_pump.sign );
+	// Serial.println( e_offset );
 	
-	EEPROM_f( get, e_offset, sign );
-	Log.notice(STR_SXd_CR, FF("read_flash: sign = "), (uint16_t)sign, __LINE__);
-	
-	if ( sign == FLASH_SIGNATURE )
+	if ( fv_pump.sign == FLASH_SIGNATURE )
 	{
-		// Log.notice(STR_SXd_CR, FF(""), 0, __LINE__);
-		EEPROM_f( get, e_offset, fv_pump );
-		EEPROM_f( get, e_offset, fv_errors );
-		/* 
-		EEPROM_f( get, e_offset, fv_pump.cnt );
-		EEPROM_f( get, e_offset, fv_pump.owfl );
-		EEPROM_f( get, e_offset, fv_pump.total_time );
-		EEPROM_f( get, e_offset, fv_pump.total_volume );
-
-		for(size_t i=0; i<sizeof(fv_errors); i++ ) 
-			EEPROM_f( get, e_offset, fv_errors[i] );
-	  */	
-	 
+		for (size_t i=2; i<sizeof(fv_pump); i++)
+				EEPROM_f( get, e_offset, e_buf[i] );
+		
 		Log.notice(FF("read_flash done %d %d" CR), FLASH_OFFSET, e_offset);
 		
 		print_flash(__LINE__);
@@ -261,9 +266,9 @@ bool read_flash()
 	else 
 	{
 		// Log.notice(STR_SXd_CR, FF(""), 0, __LINE__);
-		for (size_t i=0; i<sizeof(fv_errors); fv_errors[i++]=0);
+		for (size_t i=0; i<sizeof(fv_pump.errors); fv_pump.errors[i++]=0);
 		print_flash(__LINE__);
-		write_flash(FLASH_SIGNATURE);
+		write_flash();
 		return false;
 	}
 	
@@ -273,19 +278,16 @@ bool read_flash()
 void write_flash(uint16_t sign)
 {
 	int e_offset = FLASH_OFFSET;
+	// t_EEPROM_sign &s = (t_EEPROM_sign&)sign;
+	char *e_buf = (void*)&fv_pump;
 	
+	// Serial.println( sign );
 	Log.warning(STR_SXd_CR, FF("write flash: free mem = "), freeRam(), __LINE__);
 	
-	EEPROM_f( EEPROM_W_FUNC, e_offset, sign );
-	
-	EEPROM_f( EEPROM_W_FUNC, e_offset, fv_pump.cnt );
-	EEPROM_f( EEPROM_W_FUNC, e_offset, fv_pump.owfl );
-	EEPROM_f( EEPROM_W_FUNC, e_offset, fv_pump.total_time );
-	EEPROM_f( EEPROM_W_FUNC, e_offset, fv_pump.total_volume );
-	
-	for(size_t i=0; i<sizeof(fv_errors); i++) 
-		EEPROM_f( EEPROM_W_FUNC, e_offset, fv_errors[i] );
-	
+	fv_pump.sign = sign;
+	for (size_t i=0; i<sizeof(fv_pump); i++)
+				EEPROM_f( EEPROM_W_FUNC, e_offset, e_buf[i] );
+ 
 	Log.notice(FF("write_flash done %d %d" CR), FLASH_OFFSET, e_offset);
 	print_flash(__LINE__);
 	
@@ -398,9 +400,12 @@ void lcd_status()
 	// char buf[LCD_WIDTH+1];
 
 	// update stat
-	pump_last_time = TankTimeout.elapsed();
-  pump_last_volume = SPEED_LPS * pump_last_time;
-	
+	if ( TankTimeout.isRunning() )
+	{
+		pump_last_time = TankTimeout.elapsed();
+		pump_last_volume = SPEED_LPS * pump_last_time;
+	}
+		
   lcd.setCursor(0, 0);
   switch (pump)
   {
@@ -424,8 +429,17 @@ void lcd_status()
 					c2 = sw(sw_HighMark.pressed(), 'F'),
 					c3 = sw( sw_LowMark.pressed(), 'E'),
 					sprintTime4(s_time, pump_last_time),
+				#ifdef DEBUG_WAKEUPS
+					loop_cnt
+				#else
 					pump_last_volume
+				#endif
 					);
+			
+	#ifdef DEBUG_WAKEUPS			
+	buf[6] = 'A'-1 + wakeupmode; 	// отладка
+	#endif
+	
 	lcd_print(buf, __LINE__);
 	// Log.notice( STR_sd_CR, buf, );
 	
@@ -436,7 +450,7 @@ void lcd_status()
 int sprintErrors(char* buf)
 {		
 		char *s = buf;
-		for(char i=0; i<sizeof(fv_errors); s+=sprintf(s, "%X", fv_errors[i++]));
+		for(char i=0; i<sizeof(fv_pump.errors); s+=sprintf(s, "%X", fv_pump.errors[i++]));
 		for(char* t = buf; *t; t++) 
 			if (*t=='0') *t=' ';
 		
@@ -460,7 +474,11 @@ void lcd_statistic(uint8_t mode=0)
 			*buf = 'T';
 			*(buf+1)=' ';
 			sprintTime5(buf+2, fv_pump.total_time);
+	#ifdef DEBUG_WAKEUPS
+			sprintf(buf+7, " V %06d", loop_cnt);
+	#else
 			sprintf(buf+7, " V %06d", fv_pump.total_volume);
+	#endif			
 			
       lcd_print(buf, __LINE__);
 
@@ -499,7 +517,7 @@ void PumpOff()
 		
   fv_pump.total_time += pump_last_time;
   fv_pump.total_volume += pump_last_volume;
-	write_flash();
+	// write_flash();
 
   // Log.notice( FF( "done: %i seconds" CR), pump_last_time );
 	
@@ -578,6 +596,9 @@ void _shutdown(t_ShutdownMode mode = POWEROFF)
 
   delay(100); // чтобы байтики через serial прошли ...перед глубоким сном
 	
+	#ifdef DEBUG_WAKEUPS
+	wakeupmode = 1;
+	#endif
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
 	
 #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
@@ -597,14 +618,10 @@ void Shutdown(t_ShutdownMode mode)
 	if ( !(mode == POWEROFF || mode == STANDBY) && mode > ERR_LAST) mode = ABORT;
 	if (mode < POWEROFF)
 	{
-		byte &err = fv_errors[mode - ABORT];
+		byte &err = fv_pump.errors[mode - ABORT];
 		err += (err^0x0f)?1:0;
 		
 		pump = PUMP_ABORT;
-/* 		
-		sprintErrors(buf);
-		Log.notice( FF("Shutdown mode %d %X %X %d %s (%d)" CR), mode, &err, fv_errors, sizeof(fv_errors), buf, __LINE__);
- */
 	}
 
 
@@ -618,6 +635,8 @@ void Shutdown(t_ShutdownMode mode)
 		PumpOff();
 	}
 	
+	write_flash();
+		
 	// lcd_on(pump != PUMP_ABORT);
 	v_StatMode = 0;
 	lcd_on();
@@ -629,7 +648,6 @@ void Shutdown(t_ShutdownMode mode)
 	
 	lcd_print( buf, __LINE__);
 	// Log.fatal( STR_sd_CR, buf, __LINE__);
-
 	
 #ifdef WatchDog_h
   WatchDog::stop();
@@ -837,7 +855,7 @@ ISR(WDT_vect) {
 }
 #endif
 
-void log_internal_state(int l_cnt)
+void log_internal_state(int loop_cnt)
 {
 #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)
     unsigned long e1 =   FlowTimeout.elapsed();
@@ -845,10 +863,10 @@ void log_internal_state(int l_cnt)
 		unsigned long e3 =   LCD_Timeout.elapsed();
 		unsigned long e4 =   StatDelay.elapsed();
 						
-    Log.trace( FF("l_cnt = %d, t = %l f_WDT %i, f_Overflow %i, f_LowMark %i, f_HighMark %i, " CR
+    Log.trace( FF("loop_cnt = %d, t = %l f_WDT %i, f_Overflow %i, f_LowMark %i, f_HighMark %i, " CR
 									"        portBhistory %X, portChistory %X, portDhistory %X, " CR
 									"        FlowTimeout = %c %l, TankTimeout = %c %l, LCD_Timeout = %c %l, StatDelay = %c %l" CR),
-               l_cnt, t, f_WDT, f_Overflow, f_LowMark, f_HighMark,
+               loop_cnt, t, f_WDT, f_Overflow, f_LowMark, f_HighMark,
                portBhistory, portChistory, portDhistory, 
 							 sw( FlowTimeout.isRunning(), 'R') , e1, sw( TankTimeout.isRunning(), 'R'), e2, 
 							 sw( LCD_Timeout.isRunning(), 'R'), e3, sw( StatDelay.isRunning(), 'R'), e4
@@ -887,6 +905,7 @@ void setup()
 	
 	// write_flash(0); // только один раз для платы
 	read_flash();
+	fv_pump.pwr++;
 
   pinMode(SW_MOTOR, OUTPUT);
   pinMode(SW_VALVE, OUTPUT);
@@ -894,7 +913,8 @@ void setup()
   PumpOff();
 
   lcd_status();
-  lcd.print( FF("READY!!!") );
+  lcd.print( FF("READY! pwr=" ) );
+	lcd.print( fv_pump.pwr );
 	StatDelay.start();
 
 	PORTD |= (1 << PORTD5) | (1 << PORTD6) | (1 << PORTD6);
@@ -916,8 +936,6 @@ void setup()
 }
 
 //***********************************************************************************************************************************************************
-uint8_t l_cnt = 0;
-#define CNT_DIV 3
 
 void loop() 
 {
@@ -954,22 +972,28 @@ void loop()
     Log.verbose(FF("Sleep %d" CR), __LINE__);
 #endif		
 		delay(10);	// чтобы байтики через serial прошли ...перед сном
+		#ifdef DEBUG_WAKEUPS
+		wakeupmode = 2;
+		#endif
 		LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_ON, SPI_OFF, USART0_OFF, TWI_OFF);
     //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_ON, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_OFF);
     //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART0_OFF, TWI_OFF);
 #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
     Log.verbose(FF("wakeup %d" CR), __LINE__);
-#endif		
+#endif
+		#ifdef DEBUG_WAKEUPS
+		wakeupmode = 3;
+		#endif
   }
 #else
 	delay(100); // если нет LowPower
 #endif
 
-	l_cnt++;
+	loop_cnt++;
 
   if ( StatDelay.hasPassed(STAT_DELAY, true) )
   {
-		// log_internal_state(l_cnt);
+		// log_internal_state(loop_cnt);
 					
 		if (pump == PUMP_ON) 
 		{
@@ -995,6 +1019,10 @@ void loop()
 		LCD_Timeout.add( -LCD_Timeout.elapsed() );
 
 		Shutdown(STANDBY);
+		#ifdef DEBUG_WAKEUPS
+		wakeupmode = 4;
+		#endif
+		lcd_statistic();
 	}
 	else if ((pump == PUMP_OFF) && LCD_Timeout.hasPassed(LCD_STAT_TIME))
 	{
