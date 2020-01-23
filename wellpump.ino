@@ -20,8 +20,9 @@
 */
 
 // #define DEBUG_WAKEUPS
-#define DISABLE_LOGGING
+// #define DISABLE_LOGGING
 
+#include <limits.h>
 // #include <avr/wdt.h>
 #include <LowPower.h>               //  https://github.com/rocketscream/Low-Power
 #include <EEPROM.h>
@@ -44,9 +45,9 @@
 
 #define SETFLAG(x) ( ++(x)?(x):(++(x)) )  // если увеличение дало 0, то увеличиваем еще раз
 
-
+typedef unsigned long	t_time;
 /* для работы со сторками из ПЗУ */
-typedef const __FlashStringHelper* fchar;
+typedef __FlashStringHelper* fchar;
 //const char LOG_AS[] PROGMEM =
 
 //#define FF(a) 			(a)
@@ -68,6 +69,7 @@ LiquidCrystal_PCF8574 			lcd(LCD_PORT);
 #define PIN_OVERFLOW        PD5
 #define PIN_HIGHMARK        PD6
 #define PIN_LOWMARK         PD7
+#define PIN_STATUS					PB2
 
 // sensors' pins
 #define SNS_OVERFLOW				5
@@ -95,6 +97,7 @@ LiquidCrystal_PCF8574 			lcd(LCD_PORT);
 #define LCD_TIMEOUT         (LCD_STAT_TIME+10) // s
 #define LCD_STAT_TIME       7 // s
 #define STAT_DELAY			 		250 // ms
+#define RESET_TIMEOUT				8000 // ms
 
 
 //******************************************************************************************
@@ -109,10 +112,10 @@ uint8_t  wakeupmode = 0;
 byte v_StatMode = 0;
 
 
-volatile uint8_t f_Overflow = 0;
-volatile uint8_t f_LowMark = 0;
-volatile uint8_t f_HighMark = 0;
-
+volatile uint8_t f_Overflow	= 0;
+volatile uint8_t f_LowMark	= 0;
+volatile uint8_t f_HighMark	= 0;
+volatile uint8_t f_Status		= 0;
 
 void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
 void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length);
@@ -149,6 +152,7 @@ typedef enum : char { POWEROFF = 0,
 											ERR_INV_LOWMARK_STATUS,
 											ERR_INV_HIGHMARK_STATUS,
 											ERR_HIGHMARK_UNATTENDED_RELEASE,
+											ERR_FLASH_RESET,
 											ERR_LAST
 											
 										} t_ShutdownMode;
@@ -165,14 +169,15 @@ const  char ErrorMsg_7[] PROGMEM 	= "INVALID sensors!";
 const  char ErrorMsg_8[] PROGMEM 	= "LM FTL! Chk SENS";
 const  char ErrorMsg_9[] PROGMEM 	= "HM FTL! Chk SENS";
 const  char ErrorMsg_10[] PROGMEM = "HM ERR! Chk SENS";
+const  char ErrorMsg_11[] PROGMEM = "FLASH ERASED!"; //"Press RESET btn!";
 const  char ErrorMsg_0[] PROGMEM  = "READY! cnt=";
 
 				
 const  char* const  ErrorMsg[] PROGMEM = {
 										ErrorMsg_0,
 										ErrorMsg_1, ErrorMsg_2, ErrorMsg_3, ErrorMsg_4, ErrorMsg_5,
-										ErrorMsg_6, ErrorMsg_7, ErrorMsg_8, ErrorMsg_9, ErrorMsg_10
-										
+										ErrorMsg_6, ErrorMsg_7, ErrorMsg_8, ErrorMsg_9, ErrorMsg_10, 
+										ErrorMsg_11
 };
 
 
@@ -187,7 +192,7 @@ struct t_flash_var_pump {
 				unsigned int 		pwr;
 				unsigned int 		cnt;
 				unsigned int 		owfl;
-				unsigned long 	total_time;
+				t_time				 	total_time;
 				unsigned long		total_volume;
 				byte						errors[ERR_LAST-ABORT];
 			};
@@ -199,7 +204,8 @@ t_flash_var_pump				fv_pump 							= {0, 0, 0, 0, 0, 0};
 unsigned 								pump_last_time        = 0;
 unsigned								pump_last_volume      = 0;
 
-char 										buf[20];
+char 										buf[LCD_WIDTH+1];
+char										buf2[LCD_WIDTH+2];
 
 //******************************************************************************************
 
@@ -249,7 +255,7 @@ bool read_flash()
 		
 	EEPROM_f( get, e_offset, e_buf[0] );
 	EEPROM_f( get, e_offset, e_buf[1] );
-	Log.notice(STR_SXd_CR, FF("read_flash: sign = "), fv_pump.sign, __LINE__);
+	// Log.notice(STR_SXd_CR, FF("read_flash: sign = "), fv_pump.sign, __LINE__);
 	// Serial.println( fv_pump.sign );
 	// Serial.println( e_offset );
 	
@@ -282,7 +288,7 @@ void write_flash(uint16_t sign)
 	char *e_buf = (void*)&fv_pump;
 	
 	// Serial.println( sign );
-	Log.warning(STR_SXd_CR, FF("write flash: free mem = "), freeRam(), __LINE__);
+	// Log.warning(STR_SXd_CR, FF("write flash: free mem = "), freeRam(), __LINE__);
 	
 	fv_pump.sign = sign;
 	for (size_t i=0; i<sizeof(fv_pump); i++)
@@ -293,15 +299,22 @@ void write_flash(uint16_t sign)
 	
 }
 
+void reset_flash()
+{
+		for (size_t i=0; i<sizeof(fv_pump); i++)
+				EEPROM.write ( FLASH_OFFSET + i, (byte)0 );
+}
+
+
 
 void lcd_on(bool timeout = false)
 {
   lcd.setBacklight(255);
   lcd.clear();
 
-// #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)
+#if (LOG_LEVEL == LOG_LEVEL_VERBOSE)
 	Log.trace(FF("lcd_on %d restart = %c" CR), __LINE__, timeout?'R':'-' );
-// #endif
+#endif
 	
   if (timeout)
     LCD_Timeout.restart();
@@ -383,10 +396,16 @@ char* sprintTime5(char* s, unsigned long v)
   return s;
 }
 
-void lcd_print(char buf[], int l)
+void lcd_print(char buf[], unsigned int l)
 {
 	lcd.print(buf);
 	Log.notice( STR_sd_CR, buf, l);
+}
+
+void lcd_print_P(fchar buf, unsigned int l)
+{
+	lcd.print( (buf) );
+	Log.notice( STR_SXd_CR, (buf), 0, l);
 }
 
 
@@ -457,20 +476,34 @@ int sprintErrors(char* buf)
 		return s-buf;
 }
 
+/* 
+before:
+Скетч использует 10844 байт (75%) памяти устройства. Всего доступно 14336 байт.
+Глобальные переменные используют 765 байт (74%) динамической памяти, оставляя 259 байт для локальных переменных. Максимум: 1024 байт.
+
+after:
+Скетч использует 11468 байт (79%) памяти устройства. Всего доступно 14336 байт.
+Глобальные переменные используют 780 байт (76%) динамической памяти, оставляя 244 байт для локальных переменных. Максимум: 1024 байт.
+ */
+ 
 void lcd_statistic(uint8_t mode=0)
 {
 														//12    34567890123456
 	// char buf[LCD_WIDTH+5] = "T ";//00000 V 000000";
 	int sh;
 	size_t i;
+	char* b1;
+	char* b2;	
+	uint16_t p1;
+	uint16_t p2;
+
+  lcd.setCursor(0, 0);	
 	
   switch (mode)
   {
 		default:  // пока так
 			v_StatMode = 0;
     case 0:
-    	
-      lcd.setCursor(0, 0);
 			*buf = 'T';
 			*(buf+1)=' ';
 			sprintTime5(buf+2, fv_pump.total_time);
@@ -478,22 +511,92 @@ void lcd_statistic(uint8_t mode=0)
 			sprintf(buf+7, " V %06d", loop_cnt);
 	#else
 			sprintf(buf+7, " V %06d", fv_pump.total_volume);
-	#endif			
-			
-      lcd_print(buf, __LINE__);
-
-      lcd.setCursor(0, 1);
-			
-			sh = sprintf( buf, "%03dE", fv_pump.cnt);
+	#endif					
+			sh = sprintf( buf2, "%03dE", fv_pump.cnt);
 			// залить пробелами строку до конца экрана
-			for( i=sh+sprintErrors( buf + sh ); i<=LCD_WIDTH; buf[i++]=' '); //fv_pump.owfl);
-			buf[LCD_WIDTH] = 0;
+			for( i=sh+sprintErrors( buf2 + sh ); i<=LCD_WIDTH; buf2[i++]=' '); //fv_pump.owfl);
+			buf2[LCD_WIDTH] = 0;
 			
-			lcd_print(buf, __LINE__);
+			// lcd_print(buf, __LINE__);
 			// Log.notice( FF("stat (%d): sh %i buf %s" CR), __LINE__, sh, buf);
 			break;
-  }
+		case 1:
+			b1 = PSTR("Total time: ");
+			b2 = PSTR("Ttl volume: ");
+			p1 = fv_pump.total_time;
+			p2 = fv_pump.total_volume;
+			// total time
+			// total liters
+			break;
+		case 2:
+			b1 = PSTR("Power ups: ");
+			b2 = PSTR("Pumps ON:  ");
+			p1 = fv_pump.pwr;
+			p2 = fv_pump.cnt;
+			// power 
+			// fills	
+			break;
+		case 3:
+			b1 = PSTR("Overflow:  ");
+			b2 = PSTR("Fatal ERR: ");
+			p1 = fv_pump.owfl;
+			p1 = fv_pump.errors[ABORT];
+			// overflow
+			// fatal
+			break;
+		case 4:
+			b1 = PSTR("No FLOW:   ");
+			b2 = PSTR("Tank ABR:  ");
+			p1 = fv_pump.errors[ERR_NO_FLOW];
+			p1 = fv_pump.errors[ERR_TANK_TIMEOUT];
+			// NO FLOW
+			// Tank Timout
+			break;
+		case 5:	
+			b1 = PSTR("WATCHDOG:  ");
+			b2 = PSTR("Start ABR: ");
+			p1 = fv_pump.errors[ERR_WATHCDOG];
+			p1 = fv_pump.errors[ERR_START_ABORTED_PUMP];
+			// WATCHDOG	
+			// Start failed
+			break;
+		case 6:	
+			b1 = PSTR("INV sens:   ");
+			b2 = PSTR("HM&LM err:  ");
+			p1 = fv_pump.errors[ERR_INVALID_SENSORS];
+			p1 = fv_pump.errors[ERR_HIGHMARK_UNATTENDED_RELEASE];
+			// INVALID sensors!";
+			// HM ERR
+			break;
+		case 7:	
+			b1 = PSTR("LM errors:  ");
+			b2 = PSTR("HM errors:  ");
+			p1 = fv_pump.errors[ERR_INV_LOWMARK_STATUS];
+			p1 = fv_pump.errors[ERR_INV_HIGHMARK_STATUS];
+// const  char ErrorMsg_8[] PROGMEM 	= "LM FTL! Chk SENS";
+// const  char ErrorMsg_9[] PROGMEM 	= "HM FTL! Chk SENS";
 
+			break;
+  }
+      
+	if ( mode > 0 )
+	{
+		size_t l;
+		l = strlcpy_P(buf, (char*)pgm_read_word(&b1), sizeof(buf));
+		if ( mode == 1 )
+			sprintTime5(buf + l, p1);
+		else	
+			sprintf(buf + l, "%d", p1);
+		
+		l = strlcpy_P(buf2, (char*)pgm_read_word(&b2), sizeof(buf2));
+		sprintf(buf2 + l, "%d", p2);
+	}
+	
+	lcd.setCursor(0, 0);		
+	lcd_print(buf, __LINE__+mode*10000);
+  lcd.setCursor(0, 1);
+	lcd_print(buf2, __LINE__+mode*10000);
+	
   //lcd_on(true);
 }
 
@@ -642,9 +745,9 @@ void Shutdown(t_ShutdownMode mode)
 	lcd_on();
 	lcd_status();
 	
-	strcpy_P(buf, (char*)pgm_read_word(&(ErrorMsg[(mode==POWEROFF)?0:mode-ABORT+1])));
+	l = strlcpy_P(buf, (char*)pgm_read_word(&(ErrorMsg[(mode==POWEROFF)?0:mode-ABORT+1])), sizeof(buf));
 	if (mode == POWEROFF) 
-		sprintf(buf + strlen(buf), "%d", fv_pump.cnt);
+		sprintf(buf + l, "%d", fv_pump.cnt);
 	
 	lcd_print( buf, __LINE__);
 	// Log.fatal( STR_sd_CR, buf, __LINE__);
@@ -657,6 +760,20 @@ void Shutdown(t_ShutdownMode mode)
   _shutdown(mode);
 }
 
+void _reset()
+{
+	// lcd_on();
+	// lcd_print( strcpy_P(buf, FF("FLASH ERASED!") ), __LINE__);
+	// lcd.setCursor(0, 1);
+	// lcd_print( strcpy_P(buf, FF("Press RESET btn!") ), __LINE__);
+	delay(100);
+	
+	Shutdown(ERR_FLASH_RESET);
+	// wdt_disable();
+	// wdt_enable(WDTO_8S);
+	// while(1);
+}
+
 /* 
 void A_Watchdog()
 {
@@ -667,13 +784,14 @@ void A_Watchdog()
 }
  */
  
+
 //***********************************************************************************************************************************************************
 
 void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
-// #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
+#if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
   Log.trace( FF(CR "LowMark: %i %x" CR), f_LowMark, event);
-// #endif	
+#endif	
   //f_LowMark = 0;
 
   switch (event)
@@ -705,9 +823,9 @@ void btn_LowMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 
 void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
-// #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
+#if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
   Log.trace( FF(CR "HighMark: %i %x" CR), f_HighMark, event);
-// #endif 
+#endif 
 	//f_HighMark = 0;
 
   //  must be pressed before
@@ -747,9 +865,9 @@ void btn_HighMark(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 
 void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
-// #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
+#if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
   Log.trace(FF(CR "OVERFLOW: %i %x" CR), f_Overflow, event);
-// #endif
+#endif
 
   fv_pump.owfl++;
 
@@ -762,10 +880,47 @@ void btn_Overflow(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 
 void btn_Status(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 {
-	if (pump != PUMP_ON && event == EVENT_PRESSED)
+	static t_time ev_time = 0;
+	// if (pump != PUMP_ON && event == EVENT_PRESSED)
+	// {
+		// lcd_on(true);
+		// lcd_statistic(++v_StatMode);
+	// }
+// #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
+  Log.trace( FF("btn_Status: %i %x" CR), v_StatMode, event);
+// #endif 
+	// Serial.print(FF("btn_Status "));
+	Serial.println(ev_time);
+	
+	if (pump == PUMP_ON) return;
+	switch ( event ) 
 	{
-		lcd_on(true);
-		lcd_statistic(++v_StatMode);
+		case EVENT_PRESSED:
+			ev_time = millis();
+			lcd_on(true);
+			lcd_statistic(++v_StatMode);
+			break;
+		case EVENT_RELEASED:
+			{
+				t_time ev_len, now = millis();
+				
+				Serial.println(now);
+				
+				if ( now < ev_time ) 
+					ev_len = ULONG_MAX - ev_time + now;
+				else
+					ev_len = now - ev_time;
+				
+				if ( ev_len > RESET_TIMEOUT )
+				{
+					Serial.println(ev_len);
+					// Serial.println(RESET_TIMEOUT);
+					reset_flash();
+					_reset();
+				}
+				
+				break;
+			}
 	}
 }
 
@@ -801,7 +956,7 @@ ISR(PCINT2_vect)
   }
 
 }
-/* 
+
 ISR(PCINT0_vect)
 {
   t = millis();
@@ -811,23 +966,13 @@ ISR(PCINT0_vect)
   changedbits = PINB ^ portBhistory;
   portBhistory = PINB;
 
-   // if (changedbits & (1 << PIN_OVERFLOW))
-   // {
-     // SETFLAG(f_Overflow);
-   // }
+   if (changedbits & (1 << PIN_STATUS))
+   {
+     SETFLAG(f_Status);
+   }
   
-   // if (changedbits & (1 << PIN_HIGHMARK))
-   // {
-     // SETFLAG(f_HighMark);
-   // }
-  
-   // if (changedbits & (1 << PIN_LOWMARK))
-   // {
-     // SETFLAG(f_LowMark);
-   // }
-
 }
- */
+
  
  /* 
 ISR(INT1_vect)
@@ -836,7 +981,7 @@ ISR(INT1_vect)
 }
  */
 
-#ifdef WatchDog_h
+/* #ifdef WatchDog_h
 //volatile uint8_t  = 0;
 ISR(WDT_vect) {
 #ifdef WatchDog_h
@@ -854,7 +999,8 @@ ISR(WDT_vect) {
   SETFLAG(f_WDT);
 }
 #endif
-
+ */
+ 
 void log_internal_state(int loop_cnt)
 {
 #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)
@@ -880,23 +1026,24 @@ void log_internal_state(int loop_cnt)
 
 void setup() 
 {
+	STR_sd_CR = FF("%s (line:%d)" CR);
+	STR_SXd_CR = FF("%S %X (line:%d)" CR);
+	
   Serial.begin(115200);
   while (!Serial);
-  Serial.println(FF(CR "In the begining...") );
+  // Serial.println(FF(CR "In the begining...") );
 
   // lcd.init();
   lcd.begin(16, 2);
   lcd.noAutoscroll();
   lcd_on(true);
-  lcd.print(FF("Starting..."));
+  Log.begin(LOG_LEVEL, &Serial);
+  // Log.notice( FF(CR "******************************************" CR) );                     // Info string with Newline
+
+  lcd_print_P(FF("Starting..."), __LINE__);
   //  lcd.setCursor(0,1);
   //  lcd.print("Starting...");
-
-	STR_sd_CR = FF("%s (line:%d)" CR);
-	STR_SXd_CR = FF("%S %X (line:%d)" CR);
 	
-  Log.begin(LOG_LEVEL, &Serial);
-  Log.notice( FF(CR "******************************************" CR) );                     // Info string with Newline
 
 #ifdef WatchDog_h
 	Log.notice( FF("WatchDog::init(A_Watchdog, OVF_8000MS, STOP);" CR) );
@@ -917,19 +1064,20 @@ void setup()
 	lcd.print( fv_pump.pwr );
 	StatDelay.start();
 
-	PORTD |= (1 << PORTD5) | (1 << PORTD6) | (1 << PORTD6);
-  
   // разрешение прерываний INT0 и INT1
   //  EIMSK  =  (1<<INT0)  | (1<<INT1);
 	
   // настройка срабатывания прерываний на любому изменению
   //EICRA  =  (0<<ISC11) | (1<<ISC10) | (0<<ISC01) | (1<<ISC00);
 	
+	PORTD |= (1 << PORTD5) | (1 << PORTD6) | (1 << PORTD6);
+  PORTB |= (1 << PORTB2);
+	
   // разрешение прерываний с портов B (PCINT[7:0]) и D (PCINT[23:16]), и запрет с порта C (PCINT[14:8])
-  PCICR  |= (1 << PCIE2) | (0 << PCIE1) | (0 << PCIE0);
+  PCICR  |= (1 << PCIE2) | (0 << PCIE1) | (1 << PCIE0);
 	
   // маскирование всех ног, кроме PB0 и PD7 - по одной на PCINT0 и PCINT2
-  //PCMSK0 |= (0 << PCINT7)  | (0 << PCINT6)  | (0 << PCINT5)  | (0 << PCINT4)  | (0 << PCINT3)  | (0 << PCINT2)  | (0 << PCINT1)  | (1 << PCINT0);
+  PCMSK0 |= (0 << PCINT7)  | (0 << PCINT6)  | (0 << PCINT5)  | (0 << PCINT4)  | (0 << PCINT3)  | (1 << PCINT2)  | (0 << PCINT1)  | (0 << PCINT0);
   //PCMSK1 |=                (0 << PCINT14) | (0 << PCINT13) | (0 << PCINT12) | (0 << PCINT11) | (0 << PCINT10) | (0 << PCINT9)  | (0 << PCINT8);
   PCMSK2 |= (1 << PCINT23) | (1 << PCINT22) | (1 << PCINT21) | (0 << PCINT20) | (0 << PCINT19) | (0 << PCINT18) | (0 << PCINT17) | (0 << PCINT16);
 
@@ -1021,8 +1169,8 @@ void loop()
 		Shutdown(STANDBY);
 		#ifdef DEBUG_WAKEUPS
 		wakeupmode = 4;
-		#endif
 		lcd_statistic();
+		#endif
 	}
 	else if ((pump == PUMP_OFF) && LCD_Timeout.hasPassed(LCD_STAT_TIME))
 	{
