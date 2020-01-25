@@ -20,7 +20,7 @@
 */
 
 // #define DEBUG_WAKEUPS
-// #define DISABLE_LOGGING
+#define DISABLE_LOGGING
 
 #include <limits.h>
 #include <WString.h>
@@ -239,7 +239,7 @@ int freeRam ()
 }
 
 #define FLASH_SIGNATURE	0xADB0
-#define FLASH_OFFSET		0x20*4
+#define FLASH_OFFSET		0x20*6
 
 
 void print_flash(int l)
