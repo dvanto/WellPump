@@ -222,7 +222,7 @@ void Shutdown(t_ShutdownMode mode, fchar s1); //,fchar s2,);
 // void Shutdown(t_ShutdownMode mode, fchar s1); //,fchar s2,);
 // void Shutdown(t_ShutdownMode mode = POWEROFF, const char* s1 ); //, const char*  s2,
 
-void log_internal_state();
+/* void log_internal_state(); */
 
 //******************************************************************************************
 
@@ -893,11 +893,12 @@ void btn_Status(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 		// lcd_on(true);
 		// lcd_statistic(++v_StatMode);
 	// }
-// #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
+#if (LOG_LEVEL == LOG_LEVEL_VERBOSE)	
   Log.trace( FF("btn_Status: %i %x" CR), v_StatMode, event);
-// #endif 
+
 	// Serial.print(FF("btn_Status "));
 	Serial.println(ev_time);
+#endif 
 	
 	if (pump == PUMP_ON) return;
 	switch ( event ) 
@@ -911,7 +912,7 @@ void btn_Status(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 			{
 				t_time ev_len, now = millis();
 				
-				Serial.println(now);
+				// Serial.println(now);
 				
 				if ( now < ev_time ) 
 					ev_len = ULONG_MAX - ev_time + now;
@@ -920,7 +921,7 @@ void btn_Status(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 				
 				if ( ev_len > RESET_TIMEOUT )
 				{
-					Serial.println(ev_len);
+					// Serial.println(ev_len);
 					// Serial.println(RESET_TIMEOUT);
 					reset_flash();
 					_reset();
@@ -1008,7 +1009,7 @@ ISR(WDT_vect) {
 #endif
  */
  
-void log_internal_state(int loop_cnt)
+/* void log_internal_state(int loop_cnt)
 {
 #if (LOG_LEVEL == LOG_LEVEL_VERBOSE)
     unsigned long e1 =   FlowTimeout.elapsed();
@@ -1025,7 +1026,7 @@ void log_internal_state(int loop_cnt)
 							 sw( LCD_Timeout.isRunning(), 'R'), e3, sw( StatDelay.isRunning(), 'R'), e4
 		);
 #endif
-}
+} */
 
 
 //***********************************************************************************************************************************************************
@@ -1033,9 +1034,11 @@ void log_internal_state(int loop_cnt)
 
 void setup() 
 {
+#ifndef DISABLE_LOGGING
   Serial.begin(115200);
   while (!Serial);
   // Serial.println(FF(CR "In the begining...") );
+#endif
 
   // lcd.init();
   lcd.begin(16, 2);
