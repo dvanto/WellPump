@@ -23,6 +23,7 @@
 // #define DISABLE_LOGGING
 
 #include <limits.h>
+#include <WString.h>
 // #include <avr/wdt.h>
 #include <LowPower.h>               //  https://github.com/rocketscream/Low-Power
 #include <EEPROM.h>
@@ -33,6 +34,8 @@
 #include <LiquidCrystal_PCF8574.h>
 //#include <LiquidCrystal_I2C_OLED.h>
 
+
+void _P_defines() {} // просто отметка в редакторе
 
 // * 0 - LOG_LEVEL_SILENT     no output 
 // * 1 - LOG_LEVEL_FATAL      fatal errors 
@@ -48,14 +51,15 @@
 typedef unsigned long	t_time;
 /* для работы со сторками из ПЗУ */
 typedef __FlashStringHelper* fchar;
+typedef const __FlashStringHelper* fchar_;
 //const char LOG_AS[] PROGMEM =
 
 //#define FF(a) 			(a)
 #define FF(a)       F(a)
+// #define FPSTR(a)		(a)
 
-// const char STR_D_CR[] PROGMEM  = ("%s (line:%d)" CR);
-fchar STR_sd_CR;
-fchar STR_SXd_CR;
+// https://arduino-esp8266.readthedocs.io/en/latest/PROGMEM.html 
+#define FPSTR(pstr_pointer) (reinterpret_cast<const __FlashStringHelper *>(pstr_pointer))
 
 
 /* настройки экранчика */
@@ -204,6 +208,9 @@ t_flash_var_pump				fv_pump 							= {0, 0, 0, 0, 0, 0};
 unsigned 								pump_last_time        = 0;
 unsigned								pump_last_volume      = 0;
 
+const  char PROGMEM	STR_sd_CR[]		= ("%s (line:%d)" CR);
+const  char PROGMEM	STR_SXd_CR[]	= ("%S %X (line:%d)" CR);
+
 char 										buf[LCD_WIDTH+1];
 char										buf2[LCD_WIDTH+2];
 
@@ -251,7 +258,7 @@ void write_flash(uint16_t sign = FLASH_SIGNATURE);
 bool read_flash()
 {
 	int e_offset = FLASH_OFFSET;
-	char *e_buf = (void*)&fv_pump;
+	char *e_buf = (char*)&fv_pump;
 		
 	EEPROM_f( get, e_offset, e_buf[0] );
 	EEPROM_f( get, e_offset, e_buf[1] );
@@ -285,7 +292,7 @@ void write_flash(uint16_t sign)
 {
 	int e_offset = FLASH_OFFSET;
 	// t_EEPROM_sign &s = (t_EEPROM_sign&)sign;
-	char *e_buf = (void*)&fv_pump;
+	char *e_buf = (char*)&fv_pump;
 	
 	// Serial.println( sign );
 	// Log.warning(STR_SXd_CR, FF("write flash: free mem = "), freeRam(), __LINE__);
@@ -399,13 +406,13 @@ char* sprintTime5(char* s, unsigned long v)
 void lcd_print(char buf[], unsigned int l)
 {
 	lcd.print(buf);
-	Log.notice( STR_sd_CR, buf, l);
+	Log.notice( FPSTR(STR_sd_CR), buf, l);
 }
 
-void lcd_print_P(fchar buf, unsigned int l)
+void lcd_print_P(const char* buf, unsigned int l)
 {
-	lcd.print( (buf) );
-	Log.notice( STR_SXd_CR, (buf), 0, l);
+	lcd.print( FPSTR(buf) );
+	Log.notice( FPSTR(STR_SXd_CR), FPSTR(buf), 0, l);
 }
 
 
@@ -501,8 +508,9 @@ void lcd_statistic(uint8_t mode=0)
 	
   switch (mode)
   {
+		// case 8:
 		default:  // пока так
-			v_StatMode = 0;
+			mode = v_StatMode = 0;
     case 0:
 			*buf = 'T';
 			*(buf+1)=' ';
@@ -521,8 +529,8 @@ void lcd_statistic(uint8_t mode=0)
 			// Log.notice( FF("stat (%d): sh %i buf %s" CR), __LINE__, sh, buf);
 			break;
 		case 1:
-			b1 = PSTR("Total time: ");
-			b2 = PSTR("Ttl volume: ");
+			b1 = PSTR("TTL time: ");
+			b2 = PSTR("TTL volume: ");
 			p1 = fv_pump.total_time;
 			p2 = fv_pump.total_volume;
 			// total time
@@ -540,62 +548,61 @@ void lcd_statistic(uint8_t mode=0)
 			b1 = PSTR("Overflow:  ");
 			b2 = PSTR("Fatal ERR: ");
 			p1 = fv_pump.owfl;
-			p1 = fv_pump.errors[ABORT];
+			p2 = fv_pump.errors[ABORT-ABORT];
 			// overflow
 			// fatal
 			break;
 		case 4:
 			b1 = PSTR("No FLOW:   ");
 			b2 = PSTR("Tank ABR:  ");
-			p1 = fv_pump.errors[ERR_NO_FLOW];
-			p1 = fv_pump.errors[ERR_TANK_TIMEOUT];
+			p1 = fv_pump.errors[ABORT-ERR_NO_FLOW];
+			p2 = fv_pump.errors[ABORT-ERR_TANK_TIMEOUT];
 			// NO FLOW
 			// Tank Timout
 			break;
 		case 5:	
-			b1 = PSTR("WATCHDOG:  ");
-			b2 = PSTR("Start ABR: ");
-			p1 = fv_pump.errors[ERR_WATHCDOG];
-			p1 = fv_pump.errors[ERR_START_ABORTED_PUMP];
+			b2 = PSTR("WATCHDOG:  ");
+			b1 = PSTR("Start ABR: ");
+			p2 = fv_pump.errors[ABORT-ERR_WATHCDOG];
+			p1 = fv_pump.errors[ABORT-ERR_START_ABORTED_PUMP];
 			// WATCHDOG	
 			// Start failed
 			break;
 		case 6:	
-			b1 = PSTR("INV sens:   ");
-			b2 = PSTR("HM&LM err:  ");
-			p1 = fv_pump.errors[ERR_INVALID_SENSORS];
-			p1 = fv_pump.errors[ERR_HIGHMARK_UNATTENDED_RELEASE];
+			b1 = PSTR("INV sens:  ");
+			b2 = PSTR("HM&LM err: ");
+			p1 = fv_pump.errors[ABORT-ERR_INVALID_SENSORS];
+			p2 = fv_pump.errors[ABORT-ERR_HIGHMARK_UNATTENDED_RELEASE];
 			// INVALID sensors!";
 			// HM ERR
 			break;
 		case 7:	
-			b1 = PSTR("LM errors:  ");
-			b2 = PSTR("HM errors:  ");
-			p1 = fv_pump.errors[ERR_INV_LOWMARK_STATUS];
-			p1 = fv_pump.errors[ERR_INV_HIGHMARK_STATUS];
+			b1 = PSTR("LM errors: ");
+			b2 = PSTR("HM errors: ");
+			p1 = fv_pump.errors[ABORT-ERR_INV_LOWMARK_STATUS];
+			p2 = fv_pump.errors[ABORT-ERR_INV_HIGHMARK_STATUS];
 // const  char ErrorMsg_8[] PROGMEM 	= "LM FTL! Chk SENS";
 // const  char ErrorMsg_9[] PROGMEM 	= "HM FTL! Chk SENS";
-
 			break;
   }
       
 	if ( mode > 0 )
 	{
 		size_t l;
-		l = strlcpy_P(buf, (char*)pgm_read_word(&b1), sizeof(buf));
+		l = strlcpy_P(buf, b1, sizeof(buf));
 		if ( mode == 1 )
 			sprintTime5(buf + l, p1);
 		else	
 			sprintf(buf + l, "%d", p1);
 		
-		l = strlcpy_P(buf2, (char*)pgm_read_word(&b2), sizeof(buf2));
+		l = strlcpy_P(buf2, b2, sizeof(buf2));
 		sprintf(buf2 + l, "%d", p2);
 	}
 	
 	lcd.setCursor(0, 0);		
-	lcd_print(buf, __LINE__+mode*10000);
+	lcd_print(buf, __LINE__+mode*1000);
   lcd.setCursor(0, 1);
-	lcd_print(buf2, __LINE__+mode*10000);
+	lcd_print(buf2, __LINE__+mode*1000);
 	
   //lcd_on(true);
 }
@@ -646,7 +653,7 @@ void PumpOn()
     return;
   }
 
-  Log.notice( FF("Pump ON - " ) );
+  Log.notice( FF("Pump ON" ) );
 
   // stat
   fv_pump.cnt++;
@@ -654,7 +661,7 @@ void PumpOn()
   digitalWrite(SW_VALVE, HIGH);
   digitalWrite(SW_MOTOR, HIGH);
 
-  Log.notice( FF( "done" CR) );
+  // Log.notice( FF( "done" CR) );
 
   FlowTimeout.restart();
   TankTimeout.restart();
@@ -1026,9 +1033,6 @@ void log_internal_state(int loop_cnt)
 
 void setup() 
 {
-	STR_sd_CR = FF("%s (line:%d)" CR);
-	STR_SXd_CR = FF("%S %X (line:%d)" CR);
-	
   Serial.begin(115200);
   while (!Serial);
   // Serial.println(FF(CR "In the begining...") );
@@ -1040,7 +1044,7 @@ void setup()
   Log.begin(LOG_LEVEL, &Serial);
   // Log.notice( FF(CR "******************************************" CR) );                     // Info string with Newline
 
-  lcd_print_P(FF("Starting..."), __LINE__);
+  lcd_print_P(PSTR("Starting..."), __LINE__);
   //  lcd.setCursor(0,1);
   //  lcd.print("Starting...");
 	
@@ -1100,7 +1104,7 @@ void loop()
 					pump_last_volume
 					);
 	// lcd.print(buf);
-	Log.notice( STR_sd_CR, buf, __LINE__);
+	Log.notice( FPSTR(STR_sd_CR), buf, __LINE__);
 	
 	lcd_statistic();
 	delay(100);
