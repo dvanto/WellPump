@@ -45,6 +45,7 @@ void _P_defines() {} // просто отметка в редакторе
 // * 5 - LOG_LEVEL_TRACE      errors, warnings, notices & traces 
 // * 6 - LOG_LEVEL_VERBOSE    all 
 #define LOG_LEVEL			LOG_LEVEL_TRACE
+// #define LOG_LEVEL			LOG_LEVEL_VERBOSE
 
 #define SETFLAG(x) ( ++(x)?(x):(++(x)) )  // если увеличение дало 0, то увеличиваем еще раз
 
