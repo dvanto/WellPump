@@ -157,13 +157,14 @@ typedef enum : char { POWEROFF = 0,
 											ERR_INV_LOWMARK_STATUS,
 											ERR_INV_HIGHMARK_STATUS,
 											ERR_HIGHMARK_UNATTENDED_RELEASE,
-											ERR_FLASH_RESET,
+											ERR_FLASH_RESET, // должен быть последним
 											ERR_LAST
 											
 										} t_ShutdownMode;
 						
 // ErrorNames[t_ShutdownMode-ABORT]			
 																	// 1234567890123456
+const  char ErrorMsg_0[] PROGMEM  = "READY! cnt=";
 const  char ErrorMsg_1[] PROGMEM 	= "FATAL ABORT!";
 const  char ErrorMsg_2[] PROGMEM 	= "OVRFLW DETECTED!";
 const  char ErrorMsg_3[] PROGMEM 	= "WATCHDOG ALERT!";
@@ -175,9 +176,10 @@ const  char ErrorMsg_8[] PROGMEM 	= "LM FTL! Chk SENS";
 const  char ErrorMsg_9[] PROGMEM 	= "HM FTL! Chk SENS";
 const  char ErrorMsg_10[] PROGMEM = "HM ERR! Chk SENS";
 const  char ErrorMsg_11[] PROGMEM = "FLASH ERASED!"; //"Press RESET btn!";
-const  char ErrorMsg_0[] PROGMEM  = "READY! cnt=";
 
-				
+#define ERR_IDX(i)  		(i-ABORT)
+#define ERR_MSG_IDX(i)  (ERR_IDX(i)+1)
+#define ERR_MSG(e) 			ErrorMsg[ERR_MSG_IDX(e)]
 const  char* const  ErrorMsg[] PROGMEM = {
 										ErrorMsg_0,
 										ErrorMsg_1, ErrorMsg_2, ErrorMsg_3, ErrorMsg_4, ErrorMsg_5,
@@ -240,7 +242,7 @@ int freeRam ()
 }
 
 #define FLASH_SIGNATURE	0xADB0
-#define FLASH_OFFSET		0x20*6
+#define FLASH_OFFSET		0x20*1
 
 
 void print_flash(int l)
@@ -309,8 +311,13 @@ void write_flash(uint16_t sign)
 
 void reset_flash()
 {
-		for (size_t i=0; i<sizeof(fv_pump); i++)
-				EEPROM.write ( FLASH_OFFSET + i, (byte)0 );
+	char *e_buf = (char*)&fv_pump;
+	
+	for (size_t i=0; i<sizeof(fv_pump)-1; e_buf[i++]=0); // стирать все кроме последнего errors[RESET];
+		
+	delay(100);
+	
+	Shutdown(ERR_FLASH_RESET);
 }
 
 
@@ -549,39 +556,39 @@ void lcd_statistic(uint8_t mode=0)
 			b1 = PSTR("Overflow:  ");
 			b2 = PSTR("Fatal ERR: ");
 			p1 = fv_pump.owfl;
-			p2 = fv_pump.errors[ABORT-ABORT];
+			p2 = fv_pump.errors[ERR_IDX(ABORT)];
 			// overflow
 			// fatal
 			break;
 		case 4:
 			b1 = PSTR("No FLOW:   ");
 			b2 = PSTR("Tank ABR:  ");
-			p1 = fv_pump.errors[ABORT-ERR_NO_FLOW];
-			p2 = fv_pump.errors[ABORT-ERR_TANK_TIMEOUT];
+			p1 = fv_pump.errors[ERR_IDX(ERR_NO_FLOW)];
+			p2 = fv_pump.errors[ERR_IDX(ERR_TANK_TIMEOUT)];
 			// NO FLOW
 			// Tank Timout
 			break;
 		case 5:	
-			b2 = PSTR("WATCHDOG:  ");
 			b1 = PSTR("Start ABR: ");
-			p2 = fv_pump.errors[ABORT-ERR_WATHCDOG];
-			p1 = fv_pump.errors[ABORT-ERR_START_ABORTED_PUMP];
+			b2 = PSTR("WATCHDOG:  ");
+			p1 = fv_pump.errors[ERR_IDX(ERR_START_ABORTED_PUMP)];
+			p2 = fv_pump.errors[ERR_IDX(ERR_WATHCDOG)];
 			// WATCHDOG	
 			// Start failed
 			break;
 		case 6:	
 			b1 = PSTR("INV sens:  ");
 			b2 = PSTR("HM&LM err: ");
-			p1 = fv_pump.errors[ABORT-ERR_INVALID_SENSORS];
-			p2 = fv_pump.errors[ABORT-ERR_HIGHMARK_UNATTENDED_RELEASE];
+			p1 = fv_pump.errors[ERR_IDX(ERR_INVALID_SENSORS)];
+			p2 = fv_pump.errors[ERR_IDX(ERR_HIGHMARK_UNATTENDED_RELEASE)];
 			// INVALID sensors!";
 			// HM ERR
 			break;
 		case 7:	
 			b1 = PSTR("LM errors: ");
 			b2 = PSTR("HM errors: ");
-			p1 = fv_pump.errors[ABORT-ERR_INV_LOWMARK_STATUS];
-			p2 = fv_pump.errors[ABORT-ERR_INV_HIGHMARK_STATUS];
+			p1 = fv_pump.errors[ERR_IDX(ERR_INV_LOWMARK_STATUS)];
+			p2 = fv_pump.errors[ERR_IDX(ERR_INV_HIGHMARK_STATUS)];
 // const  char ErrorMsg_8[] PROGMEM 	= "LM FTL! Chk SENS";
 // const  char ErrorMsg_9[] PROGMEM 	= "HM FTL! Chk SENS";
 			break;
@@ -597,7 +604,10 @@ void lcd_statistic(uint8_t mode=0)
 			sprintf(buf + l, "%d", p1);
 		
 		l = strlcpy_P(buf2, b2, sizeof(buf2));
-		sprintf(buf2 + l, "%d", p2);
+		l += sprintf(buf2 + l, "%d", p2);
+		
+		if ( mode == 3 )
+			sprintf(buf2 + l, " %d", fv_pump.errors[ERR_IDX(ERR_FLASH_RESET)]);
 	}
 	
 	lcd.setCursor(0, 0);		
@@ -753,7 +763,7 @@ void Shutdown(t_ShutdownMode mode)
 	lcd_on();
 	lcd_status();
 	
-	l = strlcpy_P(buf, (char*)pgm_read_word(&(ErrorMsg[(mode==POWEROFF)?0:mode-ABORT+1])), sizeof(buf));
+	l = strlcpy_P(buf, (char*)pgm_read_word(&(ErrorMsg[(mode==POWEROFF)?0:ERR_MSG_IDX(mode)])), sizeof(buf));
 	if (mode == POWEROFF) 
 		sprintf(buf + l, "%d", fv_pump.cnt);
 	
@@ -766,20 +776,6 @@ void Shutdown(t_ShutdownMode mode)
   f_WDT = 0;
 
   _shutdown(mode);
-}
-
-void _reset()
-{
-	// lcd_on();
-	// lcd_print( strcpy_P(buf, FF("FLASH ERASED!") ), __LINE__);
-	// lcd.setCursor(0, 1);
-	// lcd_print( strcpy_P(buf, FF("Press RESET btn!") ), __LINE__);
-	delay(100);
-	
-	Shutdown(ERR_FLASH_RESET);
-	// wdt_disable();
-	// wdt_enable(WDTO_8S);
-	// while(1);
 }
 
 /* 
@@ -925,7 +921,7 @@ void btn_Status(uint8_t pin, uint8_t event, uint8_t count, uint16_t length)
 					// Serial.println(ev_len);
 					// Serial.println(RESET_TIMEOUT);
 					reset_flash();
-					_reset();
+					// и уход на перезагрузку
 				}
 				
 				break;
